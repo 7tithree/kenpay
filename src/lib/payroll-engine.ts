@@ -15,6 +15,12 @@
  *   BASIC_PAY | GROSS_PAY | TAXABLE_PAY | NET_PAY
  * GROSS_PAY-point base = basic + allowances + benefits (bonus excluded).
  * NET_PAY-point items are always post-tax and never reduce taxable pay.
+ *
+ * Money: the public API is in shillings, but ALL internal arithmetic is in
+ * integer cents. Rounding policy: each payslip line is rounded to the cent
+ * exactly once (half up), after relief/cap/min; gross, taxable and net are
+ * exact integer sums of already-rounded cents, so per-employee figures and
+ * report aggregates can never drift by float error.
  */
 
 export type Tier = { upTo: number | null; rate: number }; // rate in %, upTo=null => open band
@@ -49,56 +55,64 @@ export type PayslipResult = {
   lines: LineResult[];
 };
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+// ---- Money helpers: shillings <-> integer cents ----
+const toCents = (n: number) => Math.round(n * 100);
+const fromCents = (c: number) => c / 100;
+const roundCents = (c: number) => Math.round(c); // fractional cents -> whole, half up
 
-function tieredAmount(base: number, tiers: Tier[]): number {
-  let remaining = base;
+/** Tiered amount in fractional cents; the caller rounds once per line. */
+function tieredAmountCents(baseCents: number, tiers: Tier[]): number {
+  let remaining = baseCents;
   let prevCeil = 0;
   let total = 0;
   for (const t of tiers) {
-    const bandWidth = t.upTo === null ? remaining : Math.max(0, t.upTo - prevCeil);
+    const ceil = t.upTo === null ? null : toCents(t.upTo);
+    const bandWidth = ceil === null ? remaining : Math.max(0, ceil - prevCeil);
     const inBand = Math.min(remaining, bandWidth);
     if (inBand <= 0) break;
     total += inBand * (t.rate / 100);
     remaining -= inBand;
-    prevCeil = t.upTo ?? prevCeil;
-    if (t.upTo === null) break;
+    if (ceil === null) break;
+    prevCeil = ceil;
   }
   return total;
 }
 
-function computeAmount(d: EngineDeduction, base: number): number {
-  let amount = 0;
+/** Employee amount for one line, in whole cents. */
+function computeAmountCents(d: EngineDeduction, baseCents: number): number {
+  let amount = 0; // fractional cents until the single per-line rounding below
   const rate = d.ownRate ?? d.rate ?? 0;
-  if (d.method === "FIXED") amount = rate;
-  else if (d.method === "PERCENTAGE") amount = base * (rate / 100);
-  else if (d.method === "TIERED" && d.tiers?.length) amount = tieredAmount(base, d.tiers);
+  if (d.method === "FIXED") amount = toCents(rate);
+  else if (d.method === "PERCENTAGE") amount = baseCents * (rate / 100);
+  else if (d.method === "TIERED" && d.tiers?.length) amount = tieredAmountCents(baseCents, d.tiers);
 
-  if (d.relief) amount = Math.max(0, amount - d.relief);
-  if (d.capAmount != null) amount = Math.min(amount, d.capAmount);
-  if (d.minAmount != null && amount > 0) amount = Math.max(amount, d.minAmount);
-  return round2(Math.max(0, amount));
+  if (d.relief) amount = Math.max(0, amount - toCents(d.relief));
+  if (d.capAmount != null) amount = Math.min(amount, toCents(d.capAmount));
+  const rounded = roundCents(Math.max(0, amount));
+  if (d.minAmount != null && rounded > 0) return Math.max(rounded, toCents(d.minAmount));
+  return rounded;
 }
 
 /**
- * Employer match. For TIERED deductions the employer pays employerRate on the
- * same bands as the employee (0%-rate bands stay 0), so the match plateaus at
- * the tier ceiling exactly like the employee amount — e.g. NSSF employer stops
- * at 6,480, not 6% of an unbounded gross. Non-tiered matches are a flat
- * percentage of the base, honouring the same cap as the employee side.
+ * Employer match in whole cents. For TIERED deductions the employer pays
+ * employerRate on the same bands as the employee (0%-rate bands stay 0), so
+ * the match plateaus at the tier ceiling exactly like the employee amount —
+ * e.g. NSSF employer stops at 6,480, not 6% of an unbounded gross. Non-tiered
+ * matches are a flat percentage of the base, honouring the same cap as the
+ * employee side.
  */
-function employerMatch(d: EngineDeduction, base: number): number {
+function employerMatchCents(d: EngineDeduction, baseCents: number): number {
   if (!d.employerRate) return 0;
   if (d.method === "TIERED" && d.tiers?.length) {
     const matchTiers = d.tiers.map((t) => ({
       upTo: t.upTo,
       rate: t.rate > 0 ? d.employerRate! : 0,
     }));
-    return round2(tieredAmount(base, matchTiers));
+    return roundCents(tieredAmountCents(baseCents, matchTiers));
   }
-  let amount = base * (d.employerRate / 100);
-  if (d.capAmount != null) amount = Math.min(amount, d.capAmount);
-  return round2(Math.max(0, amount));
+  let amount = baseCents * (d.employerRate / 100);
+  if (d.capAmount != null) amount = Math.min(amount, toCents(d.capAmount));
+  return roundCents(Math.max(0, amount));
 }
 
 // Company-defined earnings (allowances/benefits): FIXED amount or PERCENTAGE
@@ -113,8 +127,9 @@ export type EngineEarning = {
 
 export function computeEarning(e: EngineEarning, basicPay: number): number {
   const rate = e.ownRate ?? e.rate ?? 0;
-  const amount = e.method === "PERCENTAGE" ? basicPay * (rate / 100) : rate;
-  return round2(Math.max(0, amount));
+  const cents =
+    e.method === "PERCENTAGE" ? roundCents(toCents(basicPay) * (rate / 100)) : toCents(rate);
+  return fromCents(Math.max(0, cents));
 }
 
 export function calculatePayslip(opts: {
@@ -125,15 +140,16 @@ export function calculatePayslip(opts: {
   deductions: EngineDeduction[]; // statutory + custom, exemptions already filtered out
   schemes: EngineDeduction[];    // employee's schemes
 }): PayslipResult {
-  const allowances = opts.allowances ?? 0;
-  const benefits = opts.benefits ?? 0;
-  const bonus = opts.bonus ?? 0;
+  const basicCents = toCents(opts.basicPay);
+  const allowanceCents = toCents(opts.allowances ?? 0);
+  const benefitCents = toCents(opts.benefits ?? 0);
+  const bonusCents = toCents(opts.bonus ?? 0);
 
   // Base for GROSS_PAY-point deductions: bonus bypasses this and goes straight
   // into taxable pay.
-  const grossBase = round2(opts.basicPay + allowances + benefits);
+  const grossBaseCents = basicCents + allowanceCents + benefitCents;
   // Reported gross pay: every earning, cash and in-kind.
-  const grossPay = round2(grossBase + bonus);
+  const grossCents = grossBaseCents + bonusCents;
   const lines: LineResult[] = [];
 
   const all = [
@@ -142,43 +158,54 @@ export function calculatePayslip(opts: {
   ];
 
   // Pass 1: pre-tax items computed on BASIC or GROSS
-  let preTaxTotal = 0;
+  let preTaxCents = 0;
   for (const d of all.filter((x) => x.preTax && x.point !== "TAXABLE_PAY" && x.point !== "NET_PAY")) {
-    const base = d.point === "BASIC_PAY" ? opts.basicPay : grossBase;
-    const amount = computeAmount(d, base);
-    const employerAmount = employerMatch(d, base);
-    lines.push({ id: d.id, name: d.name, amount, employerAmount, kind: d.kind });
-    preTaxTotal += amount;
+    const base = d.point === "BASIC_PAY" ? basicCents : grossBaseCents;
+    const amount = computeAmountCents(d, base);
+    const employerAmount = employerMatchCents(d, base);
+    lines.push({
+      id: d.id,
+      name: d.name,
+      amount: fromCents(amount),
+      employerAmount: fromCents(employerAmount),
+      kind: d.kind,
+    });
+    preTaxCents += amount;
   }
 
   // Benefits are exempt from taxable pay; bonus is added directly here.
-  const taxablePay = round2(Math.max(0, grossBase - benefits - preTaxTotal) + bonus);
+  const taxableCents = Math.max(0, grossBaseCents - benefitCents - preTaxCents) + bonusCents;
 
   // Pass 2: items computed on TAXABLE_PAY (PAYE)
-  let taxTotal = 0;
+  let taxCents = 0;
   for (const d of all.filter((x) => x.point === "TAXABLE_PAY")) {
-    const amount = computeAmount(d, taxablePay);
-    lines.push({ id: d.id, name: d.name, amount, employerAmount: 0, kind: d.kind });
-    taxTotal += amount;
+    const amount = computeAmountCents(d, taxableCents);
+    lines.push({ id: d.id, name: d.name, amount: fromCents(amount), employerAmount: 0, kind: d.kind });
+    taxCents += amount;
   }
 
   // Pass 3: post-tax items (point NET_PAY, or preTax=false on basic/gross)
   // Cash actually available after tax: gross minus non-cash benefits.
-  let postTaxTotal = 0;
-  const afterTax = round2(grossPay - benefits - preTaxTotal - taxTotal);
+  let postTaxCents = 0;
+  const afterTaxCents = grossCents - benefitCents - preTaxCents - taxCents;
   for (const d of all.filter(
     (x) => x.point === "NET_PAY" || (!x.preTax && x.point !== "TAXABLE_PAY")
   )) {
     const base =
-      d.point === "NET_PAY" ? afterTax : d.point === "BASIC_PAY" ? opts.basicPay : grossBase;
-    const amount = computeAmount(d, base);
-    lines.push({ id: d.id, name: d.name, amount, employerAmount: 0, kind: d.kind });
-    postTaxTotal += amount;
+      d.point === "NET_PAY" ? afterTaxCents : d.point === "BASIC_PAY" ? basicCents : grossBaseCents;
+    const amount = computeAmountCents(d, base);
+    lines.push({ id: d.id, name: d.name, amount: fromCents(amount), employerAmount: 0, kind: d.kind });
+    postTaxCents += amount;
   }
 
   // Net pay is cash only — benefits never reach the bank account.
-  const netPay = round2(grossPay - benefits - preTaxTotal - taxTotal - postTaxTotal);
-  return { grossPay, taxablePay, netPay, lines };
+  const netCents = grossCents - benefitCents - preTaxCents - taxCents - postTaxCents;
+  return {
+    grossPay: fromCents(grossCents),
+    taxablePay: fromCents(taxableCents),
+    netPay: fromCents(netCents),
+    lines,
+  };
 }
 
 // ---- Kenyan statutory defaults (seeded per company; editable from the frontend) ----

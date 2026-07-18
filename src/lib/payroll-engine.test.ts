@@ -215,6 +215,36 @@ describe("deduction mechanics", () => {
   });
 });
 
+describe("money and rounding policy", () => {
+  it("rounds half a cent up, per line", () => {
+    // 1.5% of 33,335 = 500.025 -> 500.03 (naive float math yields 500.02)
+    const r = calculatePayslip({
+      basicPay: 33_335,
+      deductions: [
+        { id: "hl", name: "Levy", method: "PERCENTAGE", point: "BASIC_PAY", rate: 1.5, preTax: true },
+      ],
+      schemes: [],
+    });
+    expect(line(r, "Levy").amount).toBe(500.03);
+    // 2.75% of 29,090 = 799.975 -> 799.98
+    const r2 = calculatePayslip({
+      basicPay: 29_090,
+      deductions: [
+        { id: "s", name: "S", method: "PERCENTAGE", point: "BASIC_PAY", rate: 2.75, preTax: true },
+      ],
+      schemes: [],
+    });
+    expect(line(r2, "S").amount).toBe(799.98);
+  });
+
+  it("keeps totals exact in cents: net = gross - benefits - sum of lines", () => {
+    const r = slip(123_456.78, { allowances: 7_891.23, benefits: 1_234.56, bonus: 987.65 });
+    const cents = (n: number) => Math.round(n * 100);
+    const lineTotal = r.lines.reduce((sum, l) => sum + cents(l.amount), 0);
+    expect(cents(r.netPay)).toBe(cents(r.grossPay) - cents(1_234.56) - lineTotal);
+  });
+});
+
 describe("computeEarning", () => {
   it("supports fixed amounts, percentages of basic, and ownRate overrides", () => {
     expect(computeEarning({ id: "a", name: "A", method: "FIXED", rate: 4_000 }, 50_000)).toBe(4_000);
