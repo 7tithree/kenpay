@@ -1,0 +1,375 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Auth & Multi-company ----------
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime      @default(now())
+  memberships  Membership[]
+  auditLogs    AuditLog[]
+}
+
+model Company {
+  id              String           @id @default(cuid())
+  name            String
+  kraPin          String?
+  address         String?
+  createdAt       DateTime         @default(now())
+  branches        Branch[]
+  memberships     Membership[]
+  roles           Role[]
+  employees       Employee[]
+  employmentTypes EmploymentType[]
+  deductions      Deduction[]
+  allowances      Allowance[]
+  benefits        Benefit[]
+  schemes         Scheme[]
+  payrollRuns     PayrollRun[]
+  whtRates        WhtRate[]
+  whtPayments     WhtPayment[]
+  settings        Json?            // system settings (currency, payday, etc.)
+}
+
+model Branch {
+  id        String   @id @default(cuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name      String
+  location  String?
+  employees Employee[]
+}
+
+// Role holds a JSON array of permission keys (see src/lib/permissions.ts)
+model Role {
+  id          String       @id @default(cuid())
+  companyId   String
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name        String
+  permissions String[]     // e.g. ["payroll.run", "employee.view"]
+  memberships Membership[]
+
+  @@unique([companyId, name])
+}
+
+// Links a user to a company with a role — enables company switching
+model Membership {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  roleId    String
+  role      Role    @relation(fields: [roleId], references: [id])
+
+  @@unique([userId, companyId])
+}
+
+// ---------- Employees & Salaries ----------
+
+model EmploymentType {
+  id        String     @id @default(cuid())
+  companyId String
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name      String     // contractual, permanent, casual...
+  employees Employee[]
+
+  @@unique([companyId, name])
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  SUSPENDED
+  TERMINATED
+  ON_LEAVE
+}
+
+model Employee {
+  id               String          @id @default(cuid())
+  companyId        String
+  company          Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branchId         String?
+  branch           Branch?         @relation(fields: [branchId], references: [id])
+  employmentTypeId String?
+  employmentType   EmploymentType? @relation(fields: [employmentTypeId], references: [id])
+  staffNo          String
+  firstName        String
+  lastName         String
+  email            String?
+  nationalId       String?          // national ID or passport number
+  kraPin           String?
+  nssfNo           String?
+  shifNo           String?
+  designation      String?
+  bankName         String?
+  bankCode         String?
+  bankBranch       String?
+  bankBranchCode   String?
+  bankAccountNo    String?
+  status           EmployeeStatus  @default(ACTIVE)
+  basicPay         Decimal         @db.Decimal(14, 2)
+  salaryHistory    SalaryRecord[]
+  payslips         Payslip[]
+  exemptions       DeductionExemption[]
+  schemeMembers    SchemeMember[]
+  allowances       AllowanceRecipient[]
+  benefits         BenefitRecipient[]
+  createdAt        DateTime        @default(now())
+
+  @@unique([companyId, staffNo])
+}
+
+model SalaryRecord {
+  id            String   @id @default(cuid())
+  employeeId    String
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  basicPay      Decimal  @db.Decimal(14, 2)
+  effectiveFrom DateTime
+  note          String?
+  createdAt     DateTime @default(now())
+}
+
+// ---------- Deductions (editable rates, different deduction points) ----------
+
+enum CalcMethod {
+  PERCENTAGE // rate % of base
+  FIXED      // flat amount
+  TIERED     // bands (PAYE, NSSF) stored in tiers JSON
+}
+
+// The base the deduction is computed on / taken from
+enum DeductionPoint {
+  BASIC_PAY   // computed on basic pay
+  GROSS_PAY   // computed on gross, pre-tax (NSSF, SHIF, Housing Levy)
+  TAXABLE_PAY // computed on taxable pay (PAYE)
+  NET_PAY     // post-tax deduction (loans, welfare, sacco)
+}
+
+model Deduction {
+  id            String         @id @default(cuid())
+  companyId     String
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name          String         // PAYE, NSSF, SHIF, Housing Levy, Sacco...
+  statutory     Boolean        @default(false)
+  method        CalcMethod
+  point         DeductionPoint
+  rate          Decimal?       @db.Decimal(8, 4)  // % for PERCENTAGE, amount for FIXED
+  capAmount     Decimal?       @db.Decimal(14, 2) // e.g. SHIF cap 5,000
+  minAmount     Decimal?       @db.Decimal(14, 2)
+  relief        Decimal?       @db.Decimal(14, 2) // e.g. PAYE personal relief 2,400
+  employerRate  Decimal?       @db.Decimal(8, 4)  // employer match % (NSSF, Housing Levy)
+  preTax        Boolean        @default(true)     // reduces taxable pay?
+  tiers         Json?          // [{upTo: 24000, rate: 10}, ...] upTo=null => open band
+  active        Boolean        @default(true)
+  exemptions    DeductionExemption[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@unique([companyId, name])
+}
+
+// Payroll exemptions: exclude a specific employee from a deduction
+model DeductionExemption {
+  id          String    @id @default(cuid())
+  employeeId  String
+  employee    Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  deductionId String
+  deduction   Deduction @relation(fields: [deductionId], references: [id], onDelete: Cascade)
+  reason      String?
+
+  @@unique([employeeId, deductionId])
+}
+
+// ---------- Allowances & Benefits (earnings, per-company breakdown) ----------
+
+// Cash allowances (house, transport, airtime...) — taxable, part of gross pay.
+// Each company defines its own set; employees are assigned per allowance,
+// optionally with their own amount/rate override.
+model Allowance {
+  id         String               @id @default(cuid())
+  companyId  String
+  company    Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name       String               // House, Transport, Airtime...
+  method     CalcMethod           @default(FIXED) // FIXED amount or PERCENTAGE of basic pay
+  rate       Decimal?             @db.Decimal(14, 4) // amount for FIXED, % for PERCENTAGE
+  active     Boolean              @default(true)
+  recipients AllowanceRecipient[]
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+
+  @@unique([companyId, name])
+}
+
+model AllowanceRecipient {
+  id          String    @id @default(cuid())
+  allowanceId String
+  allowance   Allowance @relation(fields: [allowanceId], references: [id], onDelete: Cascade)
+  employeeId  String
+  employee    Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  ownRate     Decimal?  @db.Decimal(14, 4) // overrides the allowance amount/rate if set
+
+  @@unique([allowanceId, employeeId])
+}
+
+// Non-cash (in-kind) benefits — counted in gross pay but exempt from taxable
+// pay, and never paid out in net pay.
+model Benefit {
+  id         String             @id @default(cuid())
+  companyId  String
+  company    Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name       String             // Company car, Housing, Meals...
+  method     CalcMethod         @default(FIXED)
+  rate       Decimal?           @db.Decimal(14, 4)
+  active     Boolean            @default(true)
+  recipients BenefitRecipient[]
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  @@unique([companyId, name])
+}
+
+model BenefitRecipient {
+  id         String   @id @default(cuid())
+  benefitId  String
+  benefit    Benefit  @relation(fields: [benefitId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  ownRate    Decimal? @db.Decimal(14, 4)
+
+  @@unique([benefitId, employeeId])
+}
+
+// ---------- Schemes (separate section, same concept) ----------
+
+enum SchemeKind {
+  PENSION
+  MORTGAGE_INTEREST
+  POST_RETIREMENT_MEDICAL
+  OTHER
+}
+
+model Scheme {
+  id           String         @id @default(cuid())
+  companyId    String
+  company      Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name         String
+  kind         SchemeKind
+  method       CalcMethod
+  point        DeductionPoint @default(GROSS_PAY)
+  rate         Decimal?       @db.Decimal(8, 4)
+  capAmount    Decimal?       @db.Decimal(14, 2) // allowable-deduction cap e.g. 30,000
+  employerRate Decimal?       @db.Decimal(8, 4)
+  preTax       Boolean        @default(true)
+  active       Boolean        @default(true)
+  members      SchemeMember[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@unique([companyId, name])
+}
+
+// Employees opt in to schemes, optionally with their own amount/rate
+model SchemeMember {
+  id         String   @id @default(cuid())
+  schemeId   String
+  scheme     Scheme   @relation(fields: [schemeId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  ownRate    Decimal? @db.Decimal(8, 4) // overrides scheme rate/amount if set
+
+  @@unique([schemeId, employeeId])
+}
+
+// ---------- Payroll runs & payslips ----------
+
+enum RunStatus {
+  DRAFT
+  CERTIFIED
+  APPROVED
+  CANCELLED
+}
+
+model PayrollRun {
+  id        String    @id @default(cuid())
+  companyId String
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  period    String    // "2026-07"
+  status    RunStatus @default(DRAFT)
+  runBy     String?
+  payslips  Payslip[]
+  createdAt DateTime  @default(now())
+
+  @@unique([companyId, period])
+}
+
+model Payslip {
+  id         String        @id @default(cuid())
+  runId      String
+  run        PayrollRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   Employee      @relation(fields: [employeeId], references: [id])
+  grossPay   Decimal       @db.Decimal(14, 2)
+  taxablePay Decimal       @db.Decimal(14, 2)
+  netPay     Decimal       @db.Decimal(14, 2)
+  lines      PayslipLine[]
+
+  @@unique([runId, employeeId])
+}
+
+model PayslipLine {
+  id             String  @id @default(cuid())
+  payslipId      String
+  payslip        Payslip @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+  label          String
+  kind           String  // EARNING | BENEFIT | DEDUCTION | SCHEME | EMPLOYER
+  amount         Decimal @db.Decimal(14, 2)
+  employerAmount Decimal? @db.Decimal(14, 2)
+}
+
+// ---------- WHT (reports section) ----------
+
+model WhtRate {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  category  String  // Professional fees, Rent, Dividends, Interest...
+  resident  Boolean @default(true)
+  rate      Decimal @db.Decimal(8, 4)
+
+  @@unique([companyId, category, resident])
+}
+
+// A withholding-tax payment recorded against a payee. WHT is computed from the
+// company's WhtRate for the chosen category, and the report aggregates these.
+model WhtPayment {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  payeeName   String
+  payeePin    String?
+  category    String
+  resident    Boolean  @default(true)
+  grossAmount Decimal  @db.Decimal(14, 2)
+  whtAmount   Decimal  @db.Decimal(14, 2)
+  paidOn      DateTime
+  createdAt   DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  companyId String?
+  action    String
+  detail    Json?
+  createdAt DateTime @default(now())
+}

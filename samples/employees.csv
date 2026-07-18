@@ -1,0 +1,5 @@
+Staff No.,Name,Designation,Branch,ID/PASSPORT NO.,NSSF NO.,SHIF NO.,PIN,Account No.,Bank Name,Bank code,Bank Branch,Branch Code,Email
+EMP001,Wanjiku Kamau,Accountant,Nairobi HQ,12345678,NS001,SH001,A001234567B,0102030405060,Equity Bank,68,Nairobi West,068001,wanjiku@example.co.ke
+EMP002,Otieno Odhiambo,Clerk,Nairobi HQ,23456789,NS002,SH002,A002345678C,0203040506070,KCB,01,Moi Avenue,001002,otieno@example.co.ke
+EMP003,Amina Hassan,HR Manager,Mombasa,34567890,NS003,SH003,A003456789D,0304050607080,Co-operative Bank,11,Nyali,011003,amina@example.co.ke
+EMP004,Kiprotich Bett,Driver,Eldoret,45678901,NS004,SH004,A004567890E,0405060708090,Equity Bank,68,Eldoret,068004,kiprotich@example.co.ke
