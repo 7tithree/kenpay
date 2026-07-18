@@ -4,7 +4,17 @@ import bcrypt from "bcryptjs";
 import { prisma } from "./db";
 import type { PermissionKey } from "./permissions";
 
-const SECRET = new TextEncoder().encode(process.env.AUTH_SECRET ?? "dev-secret-change-me");
+const rawSecret = process.env.AUTH_SECRET;
+if (
+  process.env.NODE_ENV === "production" &&
+  (!rawSecret || rawSecret.length < 32 || rawSecret.includes("change-me"))
+) {
+  throw new Error(
+    "AUTH_SECRET must be set to a random string of at least 32 characters in production " +
+      "(e.g. `openssl rand -base64 48`). Refusing to start with a guessable session key."
+  );
+}
+const SECRET = new TextEncoder().encode(rawSecret ?? "dev-secret-change-me");
 const COOKIE = "kenpay_session";
 
 export type Session = {
@@ -12,6 +22,7 @@ export type Session = {
   email: string;
   name: string;
   activeCompanyId: string | null; // company switching lives here
+  tokenVersion: number; // must match User.tokenVersion or the session is revoked
 };
 
 export async function hashPassword(pw: string) {
@@ -42,7 +53,16 @@ export async function getSession(): Promise<Session | null> {
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, SECRET);
-    return payload as unknown as Session;
+    const session = payload as unknown as Session;
+    // Revocation check: a JWT is only valid while its tokenVersion matches the
+    // user's current one, so bumping User.tokenVersion invalidates every
+    // outstanding session (logout everywhere, password change/reset).
+    const user = await prisma.user.findUnique({
+      where: { id: session.userId },
+      select: { tokenVersion: true },
+    });
+    if (!user || user.tokenVersion !== (session.tokenVersion ?? 0)) return null;
+    return session;
   } catch {
     return null;
   }
@@ -51,6 +71,14 @@ export async function getSession(): Promise<Session | null> {
 export async function clearSession() {
   const cookieStore = await cookies();
   cookieStore.delete(COOKIE);
+}
+
+/** Invalidate every outstanding session for a user, on all devices. */
+export async function revokeAllSessions(userId: string) {
+  await prisma.user.update({
+    where: { id: userId },
+    data: { tokenVersion: { increment: 1 } },
+  });
 }
 
 /**

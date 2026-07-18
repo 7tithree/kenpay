@@ -18,6 +18,12 @@ export const POST = handler(async (req) => {
       passwordHash: await hashPassword(body.password),
     },
   });
-  await createSession({ userId: user.id, email: user.email, name: user.name, activeCompanyId: null });
+  await createSession({
+    userId: user.id,
+    email: user.email,
+    name: user.name,
+    activeCompanyId: null,
+    tokenVersion: user.tokenVersion,
+  });
   return { id: user.id, email: user.email, name: user.name };
 });
