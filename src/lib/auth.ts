@@ -4,17 +4,26 @@ import bcrypt from "bcryptjs";
 import { prisma } from "./db";
 import type { PermissionKey } from "./permissions";
 
-const rawSecret = process.env.AUTH_SECRET;
-if (
-  process.env.NODE_ENV === "production" &&
-  (!rawSecret || rawSecret.length < 32 || rawSecret.includes("change-me"))
-) {
-  throw new Error(
-    "AUTH_SECRET must be set to a random string of at least 32 characters in production " +
-      "(e.g. `openssl rand -base64 48`). Refusing to start with a guessable session key."
-  );
+// Validated lazily (not at module load) because `next build` imports every
+// route with NODE_ENV=production while collecting page data; the check must
+// only fire when a session is actually signed or verified at runtime.
+let secretBytes: Uint8Array | null = null;
+function getSecret(): Uint8Array {
+  if (!secretBytes) {
+    const raw = process.env.AUTH_SECRET;
+    if (
+      process.env.NODE_ENV === "production" &&
+      (!raw || raw.length < 32 || raw.includes("change-me"))
+    ) {
+      throw new Error(
+        "AUTH_SECRET must be set to a random string of at least 32 characters in production " +
+          "(e.g. `openssl rand -base64 48`). Refusing to run with a guessable session key."
+      );
+    }
+    secretBytes = new TextEncoder().encode(raw ?? "dev-secret-change-me");
+  }
+  return secretBytes;
 }
-const SECRET = new TextEncoder().encode(rawSecret ?? "dev-secret-change-me");
 const COOKIE = "kenpay_session";
 
 export type Session = {
@@ -36,7 +45,7 @@ export async function createSession(session: Session) {
   const token = await new SignJWT(session)
     .setProtectedHeader({ alg: "HS256" })
     .setExpirationTime("12h")
-    .sign(SECRET);
+    .sign(getSecret());
   const cookieStore = await cookies();
   cookieStore.set(COOKIE, token, {
     httpOnly: true,
@@ -52,7 +61,7 @@ export async function getSession(): Promise<Session | null> {
   const token = cookieStore.get(COOKIE)?.value;
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, SECRET);
+    const { payload } = await jwtVerify(token, getSecret());
     const session = payload as unknown as Session;
     // Revocation check: a JWT is only valid while its tokenVersion matches the
     // user's current one, so bumping User.tokenVersion invalidates every
