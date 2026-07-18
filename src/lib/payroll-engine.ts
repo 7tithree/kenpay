@@ -80,6 +80,27 @@ function computeAmount(d: EngineDeduction, base: number): number {
   return round2(Math.max(0, amount));
 }
 
+/**
+ * Employer match. For TIERED deductions the employer pays employerRate on the
+ * same bands as the employee (0%-rate bands stay 0), so the match plateaus at
+ * the tier ceiling exactly like the employee amount — e.g. NSSF employer stops
+ * at 6,480, not 6% of an unbounded gross. Non-tiered matches are a flat
+ * percentage of the base, honouring the same cap as the employee side.
+ */
+function employerMatch(d: EngineDeduction, base: number): number {
+  if (!d.employerRate) return 0;
+  if (d.method === "TIERED" && d.tiers?.length) {
+    const matchTiers = d.tiers.map((t) => ({
+      upTo: t.upTo,
+      rate: t.rate > 0 ? d.employerRate! : 0,
+    }));
+    return round2(tieredAmount(base, matchTiers));
+  }
+  let amount = base * (d.employerRate / 100);
+  if (d.capAmount != null) amount = Math.min(amount, d.capAmount);
+  return round2(Math.max(0, amount));
+}
+
 // Company-defined earnings (allowances/benefits): FIXED amount or PERCENTAGE
 // of basic pay, with an optional per-employee override.
 export type EngineEarning = {
@@ -125,7 +146,7 @@ export function calculatePayslip(opts: {
   for (const d of all.filter((x) => x.preTax && x.point !== "TAXABLE_PAY" && x.point !== "NET_PAY")) {
     const base = d.point === "BASIC_PAY" ? opts.basicPay : grossBase;
     const amount = computeAmount(d, base);
-    const employerAmount = d.employerRate ? round2(base * (d.employerRate / 100)) : 0;
+    const employerAmount = employerMatch(d, base);
     lines.push({ id: d.id, name: d.name, amount, employerAmount, kind: d.kind });
     preTaxTotal += amount;
   }

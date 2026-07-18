@@ -104,11 +104,10 @@ describe("NSSF tiers and SHIF cap", () => {
     expect(line(slip(150_000), "NSSF").amount).toBe(6_480);
   });
 
-  // KNOWN BUG: the employer match is a flat percentage of the full base, so it
-  // is not capped by the tiers. Statutorily the employer matches the employee's
-  // tiered amount (6,480 here), but the engine computes 6% of 150,000 = 9,000.
-  it.fails("caps the NSSF employer match at the tier ceiling (documents known bug)", () => {
+  it("caps the NSSF employer match at the tier ceiling", () => {
     expect(line(slip(150_000), "NSSF").employerAmount).toBe(6_480);
+    expect(line(slip(108_000), "NSSF").employerAmount).toBe(6_480);
+    expect(line(slip(50_000), "NSSF").employerAmount).toBe(3_000); // below ceiling: unchanged
   });
 
   it("caps SHIF at 5,000", () => {
