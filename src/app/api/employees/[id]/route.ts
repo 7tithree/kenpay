@@ -28,6 +28,13 @@ export const DELETE = handler(async (_req, { params }) => {
   const { companyId } = await requireCompany(PERMISSIONS.EMPLOYEE_DELETE);
   const e = await prisma.employee.findFirst({ where: { id: params.id, companyId } });
   if (!e) throw new ApiError(404, "Employee not found");
+  // Payslip.employee deliberately has no cascade: payroll history is immutable.
+  const payslips = await prisma.payslip.count({ where: { employeeId: params.id } });
+  if (payslips > 0)
+    throw new ApiError(
+      409,
+      "This employee appears on payroll records, which are kept immutable. Set their status to TERMINATED instead of deleting."
+    );
   await prisma.employee.delete({ where: { id: params.id } });
   return { deleted: true };
 });
