@@ -27,8 +27,9 @@ COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
 
-# Prisma engine + schema for runtime (and optional `prisma db push` at deploy)
-COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
+# Prisma 7 runs engine-less via the pg driver adapter (bundled by Next), so no
+# query-engine binary is copied. Schema/migrations ship for reference only;
+# run `prisma migrate deploy` from CI or a workstation, not from this image.
 COPY --from=build /app/prisma ./prisma
 
 USER kenpay

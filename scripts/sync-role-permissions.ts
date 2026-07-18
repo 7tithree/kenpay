@@ -2,10 +2,14 @@
 // with any permissions added to ROLE_PRESETS since the roles were created.
 // Custom permissions already on a role are kept (union, never removes).
 // Run with: npx tsx scripts/sync-role-permissions.ts
-import { PrismaClient } from "@prisma/client";
+import "dotenv/config";
+import { PrismaClient } from "../src/generated/prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { ROLE_PRESETS } from "../src/lib/permissions";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL! }),
+});
 
 async function main() {
   const roles = await prisma.role.findMany();
