@@ -26,7 +26,7 @@ Next.js 14 (App Router) + PostgreSQL (Prisma). Phase 1 build.
 ```bash
 npm install
 cp .env.example .env        # set DATABASE_URL + a strong AUTH_SECRET
-npm run db:push             # create tables
+npm run db:deploy           # create tables (applies prisma/migrations)
 npm run db:seed             # optional demo user
 npm run dev
 ```
@@ -43,7 +43,11 @@ Register, then go to **Company settings → Create a new company**. It arrives p
 - **Audit trail** — payroll runs and status changes, rate edits, resets, payslip emails, branch and WHT changes are logged with user, timestamp and detail; view under the Audit trail tab.
 - **Branches** — manage branches in Settings (inline rename, employee counts, safe delete that unassigns employees) and assign employees to a branch on creation.
 
-> Upgrading from the Phase 1 zip? Run `npm install` and `npm run db:push` again — Phase 2 adds a `WhtPayment` table.
+> Upgrading from the Phase 1 zip? Run `npm install` and `npm run db:deploy` again — Phase 2 adds a `WhtPayment` table.
+
+### Schema changes
+
+The schema is managed with Prisma migrations (`prisma/migrations`, baselined 2026-07-18). After editing `schema.prisma`, run `npm run db:migrate` to generate and apply a named migration locally; `npm run db:deploy` applies committed migrations without generating new ones (use this in production). Don't use `prisma db push` — it bypasses migration history.
 
 ### Email configuration
 

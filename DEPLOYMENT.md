@@ -17,10 +17,10 @@ Recommended stack: **RDS PostgreSQL** (database) + **App Runner** (app, from a c
    ```
 5. Create the schema once from your machine (temporarily allow your IP, or use a bastion):
    ```bash
-   DATABASE_URL="postgresql://..." npx prisma db push
+   DATABASE_URL="postgresql://..." npx prisma migrate deploy
    DATABASE_URL="postgresql://..." npm run db:seed   # optional demo data
    ```
-   > For ongoing schema changes prefer migrations: `npx prisma migrate dev` locally, `npx prisma migrate deploy` on release.
+   > Ongoing schema changes: `npm run db:migrate` locally to create a migration, `npx prisma migrate deploy` on release. Don't use `prisma db push` — it bypasses migration history.
 
 ## 2. Container image — ECR
 
