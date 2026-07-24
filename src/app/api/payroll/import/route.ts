@@ -1,15 +1,22 @@
-import Papa from "papaparse";
 import { prisma } from "@/lib/db";
 import { requireCompany, ApiError } from "@/lib/auth";
 import { handler } from "@/lib/api";
 import { PERMISSIONS } from "@/lib/permissions";
+import { parsePayrollInputsCsv } from "@/lib/payroll-import";
 
 /**
  * POST multipart/form-data: "file" (CSV) + "period" (e.g. 2026-07).
- * Headers: staffNo,allowances,bonus (allowances and bonus optional, default 0)
- * Stores per-employee payroll inputs for the period in company settings,
- * consumed by the payroll run. Bonus is a one-off for the period: it is added
- * directly at the taxable-pay step of the calculation.
+ *
+ * Accepts anything from the minimal `staffNo,allowances,bonus` inputs file to
+ * a full payroll register export. Recognised columns:
+ * - Staff No. (required) — must match existing employees
+ * - Basic pay — updates the employee's pay (+ salary history) when it differs
+ * - columns matching company-defined allowances/benefits — auto-populate that
+ *   employee's assignment with the amount (0/blank removes the assignment)
+ * - Allowances — lump "other allowances" period input
+ * - Bonus — one-off for the period, added directly at the taxable-pay step
+ * Unrecognised columns (computed values, 13th Cheque…) are ignored and
+ * reported back. Rows without a staff number (spacers, totals) are skipped.
  */
 export const POST = handler(async (req) => {
   const { companyId } = await requireCompany(PERMISSIONS.PAYROLL_RUN);
@@ -21,43 +28,95 @@ export const POST = handler(async (req) => {
   if (!(file instanceof File)) throw new ApiError(400, "No CSV file uploaded");
   if (!/^\d{4}-\d{2}$/.test(period)) throw new ApiError(422, "period must look like 2026-07");
 
-  // Headers are matched case/punctuation-insensitively; unrecognised columns
-  // are ignored (only the mapped fields are ever read).
-  const HEADER_MAP: Record<string, string> = {
-    staffno: "staffNo",
-    allowances: "allowances",
-    allowance: "allowances",
-    bonus: "bonus",
-    bonuses: "bonus",
-  };
-  const normalizeHeader = (h: string) => h.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const parsed = Papa.parse<Record<string, string>>(await file.text(), {
-    header: true,
-    skipEmptyLines: true,
-    transformHeader: (h) => HEADER_MAP[normalizeHeader(h)] ?? h.trim(),
-  });
+  const [employees, allowanceDefs, benefitDefs] = await Promise.all([
+    prisma.employee.findMany({ where: { companyId } }),
+    prisma.allowance.findMany({ where: { companyId } }),
+    prisma.benefit.findMany({ where: { companyId } }),
+  ]);
+  const byStaffNo = new Map(employees.map((e) => [e.staffNo.trim(), e]));
 
-  const employees = await prisma.employee.findMany({ where: { companyId } });
-  const byStaffNo = new Map(employees.map((e: typeof employees[number]) => [e.staffNo, e.id]));
+  const parsed = parsePayrollInputsCsv(
+    await file.text(),
+    allowanceDefs.map((a) => ({ id: a.id, name: a.name })),
+    benefitDefs.map((b) => ({ id: b.id, name: b.name }))
+  );
 
+  const failed = [...parsed.failed];
   const inputs: Record<string, { allowances: number; bonus: number }> = {};
-  const failed: { row: number; error: string }[] = [];
-  parsed.data.forEach((row, i) => {
-    const id = byStaffNo.get(String(row.staffNo ?? "")) as string | undefined;
-    const allowances = Number(row.allowances ?? 0);
-    const bonus = Number(row.bonus ?? 0);
-    if (!id) failed.push({ row: i + 2, error: `Unknown staffNo ${row.staffNo}` });
-    else if (Number.isNaN(allowances) || allowances < 0)
-      failed.push({ row: i + 2, error: "allowances must be a non-negative number" });
-    else if (Number.isNaN(bonus) || bonus < 0)
-      failed.push({ row: i + 2, error: "bonus must be a non-negative number" });
-    else inputs[id] = { allowances, bonus };
-  });
+  let payUpdated = 0;
+  let assignmentsSet = 0;
+  let assignmentsCleared = 0;
 
-  const company = await prisma.company.findUnique({ where: { id: companyId } });
-  const settings = (company?.settings as any) ?? {};
-  settings.payrollInputs = { ...(settings.payrollInputs ?? {}), [period]: inputs };
-  await prisma.company.update({ where: { id: companyId }, data: { settings } });
+  await prisma.$transaction(async (tx) => {
+    for (const row of parsed.rows) {
+      const emp = byStaffNo.get(row.staffNo);
+      if (!emp) {
+        failed.push({ row: row.rowNo, error: `Unknown staffNo ${row.staffNo}` });
+        continue;
+      }
 
-  return { loaded: Object.keys(inputs).length, failed };
+      if (row.basicPay != null && row.basicPay > 0 && row.basicPay !== Number(emp.basicPay)) {
+        await tx.employee.update({ where: { id: emp.id }, data: { basicPay: row.basicPay } });
+        await tx.salaryRecord.create({
+          data: {
+            employeeId: emp.id,
+            basicPay: row.basicPay,
+            effectiveFrom: new Date(`${period}-01T00:00:00Z`),
+            note: "Payroll CSV import",
+          },
+        });
+        payUpdated++;
+      }
+
+      for (const [allowanceId, amount] of Object.entries(row.allowanceAmounts)) {
+        if (amount > 0) {
+          await tx.allowanceRecipient.upsert({
+            where: { allowanceId_employeeId: { allowanceId, employeeId: emp.id } },
+            update: { ownRate: amount },
+            create: { allowanceId, employeeId: emp.id, ownRate: amount },
+          });
+          assignmentsSet++;
+        } else {
+          const res = await tx.allowanceRecipient.deleteMany({
+            where: { allowanceId, employeeId: emp.id },
+          });
+          assignmentsCleared += res.count;
+        }
+      }
+      for (const [benefitId, amount] of Object.entries(row.benefitAmounts)) {
+        if (amount > 0) {
+          await tx.benefitRecipient.upsert({
+            where: { benefitId_employeeId: { benefitId, employeeId: emp.id } },
+            update: { ownRate: amount },
+            create: { benefitId, employeeId: emp.id, ownRate: amount },
+          });
+          assignmentsSet++;
+        } else {
+          const res = await tx.benefitRecipient.deleteMany({
+            where: { benefitId, employeeId: emp.id },
+          });
+          assignmentsCleared += res.count;
+        }
+      }
+
+      inputs[emp.id] = { allowances: row.otherAllowances, bonus: row.bonus };
+    }
+
+    const company = await tx.company.findUnique({ where: { id: companyId } });
+    const settings = (company?.settings as any) ?? {};
+    settings.payrollInputs = { ...(settings.payrollInputs ?? {}), [period]: inputs };
+    await tx.company.update({ where: { id: companyId }, data: { settings } });
+  }, { timeout: 60000 });
+
+  return {
+    loaded: Object.keys(inputs).length,
+    payUpdated,
+    assignmentsSet,
+    assignmentsCleared,
+    matchedAllowanceCols: parsed.matchedAllowanceCols,
+    matchedBenefitCols: parsed.matchedBenefitCols,
+    ignoredColumns: parsed.ignoredColumns,
+    warnings: parsed.warnings,
+    failed,
+  };
 });

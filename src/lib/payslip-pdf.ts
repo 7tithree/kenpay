@@ -12,6 +12,7 @@ export type PayslipData = {
     nssfNo?: string | null;
     shifNo?: string | null;
   };
+  regularEarnings?: number | null; // total regular cash earnings (null on legacy slips)
   grossPay: number;
   taxablePay: number;
   netPay: number;
@@ -107,7 +108,10 @@ export async function buildPayslipPdf(p: PayslipData): Promise<Uint8Array> {
 
   // Totals
   const totals: [string, number, boolean][] = [
-    ["Gross pay", p.grossPay, false],
+    ...(p.regularEarnings != null
+      ? [["Regular cash earnings", p.regularEarnings, false] as [string, number, boolean]]
+      : []),
+    ["Total gross pay", p.grossPay, false],
     ["Taxable pay", p.taxablePay, false],
     ["NET PAY", p.netPay, true],
   ];

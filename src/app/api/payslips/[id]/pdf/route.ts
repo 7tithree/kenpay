@@ -19,6 +19,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
       period: slip.run.period,
       status: slip.run.status,
       employee: slip.employee,
+      regularEarnings: slip.regularEarnings != null ? Number(slip.regularEarnings) : null,
       grossPay: Number(slip.grossPay),
       taxablePay: Number(slip.taxablePay),
       netPay: Number(slip.netPay),

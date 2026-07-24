@@ -1,19 +1,31 @@
 /**
  * Payroll calculation engine.
  *
- * Net pay flow (per Statutory Deductions doc):
- * 1. Gross pay (basic + cash allowances + non-cash benefits + bonus)
+ * Earnings are split into:
+ *  - Total REGULAR cash earnings: basic pay + regular allowances (guaranteed
+ *    every period — house, transport...). Statutory deductions (NSSF, SHIF,
+ *    Housing Levy) and schemes at the REGULAR_EARNINGS point are computed on
+ *    this base.
+ *  - Irregular (fluctuating) allowances: not guaranteed to occur (leave,
+ *    overtime...). They count toward total gross pay and taxable pay (PAYE)
+ *    but never inflate the statutory/regular deduction base.
+ *
+ * Net pay flow:
+ * 1. Total gross pay = regular cash earnings + irregular allowances
+ *    + non-cash benefits + bonus
  * 2. Less pre-tax deductions/schemes (NSSF, SHIF, Housing Levy, pension...) -> Taxable pay
  *    Benefits are non-cash (in-kind): they count toward gross pay but are
  *    exempt from taxable pay and are never paid out in net pay.
  *    Bonus is cash added DIRECTLY at the taxable-pay step: it is fully taxable
- *    but does not inflate the base that GROSS_PAY-point deductions use.
+ *    but does not inflate the base that gross/regular-point deductions use.
  * 3. Apply PAYE bands (TIERED, point=TAXABLE_PAY) -> tax due, less personal relief
+ *    PAYE still factors in the TOTAL gross pay via taxable pay.
  * 4. Deduct everything + post-tax (NET_PAY point) items -> Net pay (cash only)
  *
  * Deduction "point" controls the BASE the amount is computed on:
- *   BASIC_PAY | GROSS_PAY | TAXABLE_PAY | NET_PAY
- * GROSS_PAY-point base = basic + allowances + benefits (bonus excluded).
+ *   BASIC_PAY | REGULAR_EARNINGS | GROSS_PAY | TAXABLE_PAY | NET_PAY
+ * REGULAR_EARNINGS-point base = basic + regular allowances (cash only).
+ * GROSS_PAY-point base = basic + all allowances + benefits (bonus excluded).
  * NET_PAY-point items are always post-tax and never reduce taxable pay.
  *
  * Money: the public API is in shillings, but ALL internal arithmetic is in
@@ -29,7 +41,7 @@ export type EngineDeduction = {
   id: string;
   name: string;
   method: "PERCENTAGE" | "FIXED" | "TIERED";
-  point: "BASIC_PAY" | "GROSS_PAY" | "TAXABLE_PAY" | "NET_PAY";
+  point: "BASIC_PAY" | "REGULAR_EARNINGS" | "GROSS_PAY" | "TAXABLE_PAY" | "NET_PAY";
   rate?: number | null;
   capAmount?: number | null;
   minAmount?: number | null;
@@ -49,7 +61,8 @@ export type LineResult = {
 };
 
 export type PayslipResult = {
-  grossPay: number;
+  regularEarnings: number; // total regular cash earnings: basic + regular allowances
+  grossPay: number;        // total gross pay: regular + irregular + benefits + bonus
   taxablePay: number;
   netPay: number;
   lines: LineResult[];
@@ -134,21 +147,26 @@ export function computeEarning(e: EngineEarning, basicPay: number): number {
 
 export function calculatePayslip(opts: {
   basicPay: number;
-  allowances?: number; // cash allowances total (taxable)
+  regularAllowances?: number;   // regular cash allowances total (guaranteed each period, taxable)
+  irregularAllowances?: number; // fluctuating cash allowances total (leave, overtime..., taxable)
   benefits?: number;   // non-cash benefits total (in gross, exempt from taxable, not paid out)
   bonus?: number;      // cash bonus, added directly at the taxable-pay step
   deductions: EngineDeduction[]; // statutory + custom, exemptions already filtered out
   schemes: EngineDeduction[];    // employee's schemes
 }): PayslipResult {
   const basicCents = toCents(opts.basicPay);
-  const allowanceCents = toCents(opts.allowances ?? 0);
+  const regularAllowanceCents = toCents(opts.regularAllowances ?? 0);
+  const irregularAllowanceCents = toCents(opts.irregularAllowances ?? 0);
   const benefitCents = toCents(opts.benefits ?? 0);
   const bonusCents = toCents(opts.bonus ?? 0);
 
+  // Base for REGULAR_EARNINGS-point deductions (statutory + schemes): only
+  // earnings guaranteed every period, cash only.
+  const regularCents = basicCents + regularAllowanceCents;
   // Base for GROSS_PAY-point deductions: bonus bypasses this and goes straight
   // into taxable pay.
-  const grossBaseCents = basicCents + allowanceCents + benefitCents;
-  // Reported gross pay: every earning, cash and in-kind.
+  const grossBaseCents = regularCents + irregularAllowanceCents + benefitCents;
+  // Reported total gross pay: every earning, cash and in-kind.
   const grossCents = grossBaseCents + bonusCents;
   const lines: LineResult[] = [];
 
@@ -157,10 +175,13 @@ export function calculatePayslip(opts: {
     ...opts.schemes.map((s) => ({ ...s, kind: "SCHEME" as const })),
   ];
 
-  // Pass 1: pre-tax items computed on BASIC or GROSS
+  // Pass 1: pre-tax items computed on BASIC, REGULAR EARNINGS or GROSS
   let preTaxCents = 0;
   for (const d of all.filter((x) => x.preTax && x.point !== "TAXABLE_PAY" && x.point !== "NET_PAY")) {
-    const base = d.point === "BASIC_PAY" ? basicCents : grossBaseCents;
+    const base =
+      d.point === "BASIC_PAY" ? basicCents
+      : d.point === "REGULAR_EARNINGS" ? regularCents
+      : grossBaseCents;
     const amount = computeAmountCents(d, base);
     const employerAmount = employerMatchCents(d, base);
     lines.push({
@@ -192,7 +213,10 @@ export function calculatePayslip(opts: {
     (x) => x.point === "NET_PAY" || (!x.preTax && x.point !== "TAXABLE_PAY")
   )) {
     const base =
-      d.point === "NET_PAY" ? afterTaxCents : d.point === "BASIC_PAY" ? basicCents : grossBaseCents;
+      d.point === "NET_PAY" ? afterTaxCents
+      : d.point === "BASIC_PAY" ? basicCents
+      : d.point === "REGULAR_EARNINGS" ? regularCents
+      : grossBaseCents;
     const amount = computeAmountCents(d, base);
     lines.push({ id: d.id, name: d.name, amount: fromCents(amount), employerAmount: 0, kind: d.kind });
     postTaxCents += amount;
@@ -201,6 +225,7 @@ export function calculatePayslip(opts: {
   // Net pay is cash only — benefits never reach the bank account.
   const netCents = grossCents - benefitCents - preTaxCents - taxCents - postTaxCents;
   return {
+    regularEarnings: fromCents(regularCents),
     grossPay: fromCents(grossCents),
     taxablePay: fromCents(taxableCents),
     netPay: fromCents(netCents),
@@ -229,7 +254,7 @@ export const KENYA_DEFAULT_DEDUCTIONS = [
     name: "NSSF",
     statutory: true,
     method: "TIERED",
-    point: "GROSS_PAY",
+    point: "REGULAR_EARNINGS",
     preTax: true,
     employerRate: 6,
     tiers: [
@@ -242,7 +267,7 @@ export const KENYA_DEFAULT_DEDUCTIONS = [
     name: "SHIF",
     statutory: true,
     method: "PERCENTAGE",
-    point: "GROSS_PAY",
+    point: "REGULAR_EARNINGS",
     rate: 2.75,
     capAmount: 5000,
     preTax: true,
@@ -251,7 +276,7 @@ export const KENYA_DEFAULT_DEDUCTIONS = [
     name: "Housing Levy",
     statutory: true,
     method: "PERCENTAGE",
-    point: "GROSS_PAY",
+    point: "REGULAR_EARNINGS",
     rate: 1.5,
     employerRate: 1.5,
     preTax: true,

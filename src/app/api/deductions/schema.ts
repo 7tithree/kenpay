@@ -4,7 +4,7 @@ export const deductionSchema = z.object({
   name: z.string().min(1),
   statutory: z.boolean().optional(),
   method: z.enum(["PERCENTAGE", "FIXED", "TIERED"]),
-  point: z.enum(["BASIC_PAY", "GROSS_PAY", "TAXABLE_PAY", "NET_PAY"]),
+  point: z.enum(["BASIC_PAY", "REGULAR_EARNINGS", "GROSS_PAY", "TAXABLE_PAY", "NET_PAY"]),
   rate: z.number().nonnegative().nullable().optional(),
   capAmount: z.number().nonnegative().nullable().optional(),
   minAmount: z.number().nonnegative().nullable().optional(),

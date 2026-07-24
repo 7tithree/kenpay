@@ -150,10 +150,11 @@ enum CalcMethod {
 
 // The base the deduction is computed on / taken from
 enum DeductionPoint {
-  BASIC_PAY   // computed on basic pay
-  GROSS_PAY   // computed on gross, pre-tax (NSSF, SHIF, Housing Levy)
-  TAXABLE_PAY // computed on taxable pay (PAYE)
-  NET_PAY     // post-tax deduction (loans, welfare, sacco)
+  BASIC_PAY        // computed on basic pay
+  REGULAR_EARNINGS // computed on total regular cash earnings: basic + regular allowances (NSSF, SHIF, Housing Levy)
+  GROSS_PAY        // computed on total gross (incl. irregular allowances + benefits), pre-tax
+  TAXABLE_PAY      // computed on taxable pay (PAYE)
+  NET_PAY          // post-tax deduction (loans, welfare, sacco)
 }
 
 model Deduction {
@@ -196,6 +197,10 @@ model DeductionExemption {
 // Cash allowances (house, transport, airtime...) — taxable, part of gross pay.
 // Each company defines its own set; employees are assigned per allowance,
 // optionally with their own amount/rate override.
+// `regular` distinguishes guaranteed monthly allowances (part of the total
+// regular cash earnings that statutory deductions are computed on) from
+// fluctuating/irregular ones (leave, overtime...) that only count toward
+// total gross pay and PAYE.
 model Allowance {
   id         String               @id @default(cuid())
   companyId  String
@@ -203,6 +208,7 @@ model Allowance {
   name       String               // House, Transport, Airtime...
   method     CalcMethod           @default(FIXED) // FIXED amount or PERCENTAGE of basic pay
   rate       Decimal?             @db.Decimal(14, 4) // amount for FIXED, % for PERCENTAGE
+  regular    Boolean              @default(true) // guaranteed every period vs fluctuating (leave, overtime)
   active     Boolean              @default(true)
   recipients AllowanceRecipient[]
   createdAt  DateTime             @default(now())
@@ -266,7 +272,7 @@ model Scheme {
   name         String
   kind         SchemeKind
   method       CalcMethod
-  point        DeductionPoint @default(GROSS_PAY)
+  point        DeductionPoint @default(REGULAR_EARNINGS)
   rate         Decimal?       @db.Decimal(8, 4)
   capAmount    Decimal?       @db.Decimal(14, 2) // allowable-deduction cap e.g. 30,000
   employerRate Decimal?       @db.Decimal(8, 4)
@@ -319,7 +325,9 @@ model Payslip {
   run        PayrollRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
   employeeId String
   employee   Employee      @relation(fields: [employeeId], references: [id])
-  grossPay   Decimal       @db.Decimal(14, 2)
+  // Total regular cash earnings: basic + regular allowances (null on legacy slips)
+  regularEarnings Decimal? @db.Decimal(14, 2)
+  grossPay   Decimal       @db.Decimal(14, 2) // total gross: regular + irregular earnings + benefits + bonus
   taxablePay Decimal       @db.Decimal(14, 2)
   netPay     Decimal       @db.Decimal(14, 2)
   lines      PayslipLine[]

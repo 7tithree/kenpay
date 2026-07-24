@@ -4,7 +4,7 @@ import { useState } from "react";
 export type RateFormValue = {
   name: string;
   method: "PERCENTAGE" | "FIXED" | "TIERED";
-  point: "BASIC_PAY" | "GROSS_PAY" | "TAXABLE_PAY" | "NET_PAY";
+  point: "BASIC_PAY" | "REGULAR_EARNINGS" | "GROSS_PAY" | "TAXABLE_PAY" | "NET_PAY";
   rate?: number | null;
   capAmount?: number | null;
   relief?: number | null;
@@ -16,7 +16,8 @@ export type RateFormValue = {
 
 const POINTS = [
   { v: "BASIC_PAY", label: "Basic pay" },
-  { v: "GROSS_PAY", label: "Gross pay (pre-tax)" },
+  { v: "REGULAR_EARNINGS", label: "Regular cash earnings (basic + regular allowances)" },
+  { v: "GROSS_PAY", label: "Total gross pay (incl. irregular allowances)" },
   { v: "TAXABLE_PAY", label: "Taxable pay" },
   { v: "NET_PAY", label: "Net pay (post-tax)" },
 ];
@@ -31,7 +32,7 @@ export default function RateForm({
   saving?: boolean;
 }) {
   const [v, setV] = useState<RateFormValue>({
-    name: "", method: "PERCENTAGE", point: "GROSS_PAY", preTax: true,
+    name: "", method: "PERCENTAGE", point: "REGULAR_EARNINGS", preTax: true,
     rate: null, capAmount: null, relief: null, employerRate: null,
     tiers: null, kind: "PENSION", ...initial,
   });

@@ -48,9 +48,21 @@ export default function PayrollPage() {
     fd.append("file", file);
     fd.append("period", period);
     try {
-      const res = await api<{ loaded: number; failed: any[] }>("/api/payroll/import", { method: "POST", body: fd });
-      setNotice(`Loaded payroll inputs for ${res.loaded} employee(s) for ${period}.`);
-      if (res.failed.length) setError(res.failed.map((f) => `Row ${f.row}: ${f.error}`).join(" · "));
+      const res = await api<{
+        loaded: number; payUpdated: number; assignmentsSet: number; assignmentsCleared: number;
+        matchedAllowanceCols: any[]; matchedBenefitCols: any[];
+        ignoredColumns: string[]; warnings: string[]; failed: any[];
+      }>("/api/payroll/import", { method: "POST", body: fd });
+      const bits = [`Loaded inputs for ${res.loaded} employee(s) for ${period}.`];
+      if (res.payUpdated) bits.push(`Basic pay updated for ${res.payUpdated}.`);
+      if (res.assignmentsSet || res.assignmentsCleared)
+        bits.push(`Allowance/benefit assignments: ${res.assignmentsSet} set, ${res.assignmentsCleared} cleared.`);
+      if (res.matchedAllowanceCols.length || res.matchedBenefitCols.length)
+        bits.push(`Matched columns: ${[...res.matchedAllowanceCols, ...res.matchedBenefitCols].map((c) => c.header).join(", ")}.`);
+      if (res.ignoredColumns.length) bits.push(`Ignored: ${res.ignoredColumns.join(", ")}.`);
+      setNotice(bits.join(" "));
+      const problems = [...(res.warnings ?? []), ...res.failed.map((f) => `Row ${f.row}: ${f.error}`)];
+      if (problems.length) setError(problems.join(" · "));
     } catch (e: any) { setError(e.message); }
     if (fileRef.current) fileRef.current.value = "";
   }
@@ -58,7 +70,7 @@ export default function PayrollPage() {
   return (
     <>
       <h1>Payroll</h1>
-      <p className="hint">Optionally import period inputs (CSV headers: staffNo, allowances, bonus — one-off amounts for this period only), then run payroll. Runs move Draft → Certified → Approved; drafts and certified runs can be cancelled.</p>
+      <p className="hint">Optionally import period inputs, then run payroll. The CSV needs a Staff No. column; Basic pay, Bonus, Allowances, and any column matching one of your defined allowances/benefits auto-populate — everything else is ignored, so a full payroll register export works as-is. Runs move Draft → Certified → Approved; drafts and certified runs can be cancelled.</p>
       {error && <div className="error">{error}</div>}
       {notice && <div className="success">{notice}</div>}
 
@@ -108,11 +120,12 @@ export default function PayrollPage() {
             <p className="mono hint">Gross KSh {fmt(totals.gross)} · Net KSh {fmt(totals.net)}</p>
             {open === r.id && (
               <table style={{ marginTop: 10 }}>
-                <thead><tr><th>Employee</th><th className="num">Gross</th><th className="num">Taxable</th><th>Deductions</th><th className="num">Net pay</th><th>Payslip</th></tr></thead>
+                <thead><tr><th>Employee</th><th className="num">Regular earnings</th><th className="num">Gross</th><th className="num">Taxable</th><th>Deductions</th><th className="num">Net pay</th><th>Payslip</th></tr></thead>
                 <tbody>
                   {r.payslips.map((p: any) => (
                     <tr key={p.id}>
                       <td>{p.employee.firstName} {p.employee.lastName}</td>
+                      <td className="num">{p.regularEarnings != null ? fmt(p.regularEarnings) : "—"}</td>
                       <td className="num">{fmt(p.grossPay)}</td>
                       <td className="num">{fmt(p.taxablePay)}</td>
                       <td>

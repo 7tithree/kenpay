@@ -10,13 +10,14 @@ import { useMe } from "@/app/dashboard/me-context";
  * optional per-employee override.
  */
 export default function EarningSection({
-  title, singular, hint, apiBase, permPrefix,
+  title, singular, hint, apiBase, permPrefix, withRegularFlag,
 }: {
   title: string;
   singular: string;      // "allowance" | "benefit" (display)
   hint: string;
   apiBase: string;       // "/api/allowances" | "/api/benefits"
   permPrefix: string;    // "allowance" | "benefit" (permission keys)
+  withRegularFlag?: boolean; // allowances only: regular vs fluctuating earning
 }) {
   const { me, can } = useMe();
   const [items, setItems] = useState<any[]>([]);
@@ -25,7 +26,7 @@ export default function EarningSection({
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
-  const emptyForm = { name: "", method: "FIXED", rate: "", active: true };
+  const emptyForm = { name: "", method: "FIXED", rate: "", regular: true, active: true };
   const [form, setForm] = useState<any>(emptyForm);
   const [assign, setAssign] = useState<{ itemId: string; employeeId: string; ownRate: string } | null>(null);
 
@@ -37,7 +38,7 @@ export default function EarningSection({
 
   function startEdit(item: any) {
     setEditing(item); setCreating(false);
-    setForm({ name: item.name, method: item.method, rate: item.rate != null ? Number(item.rate) : "", active: item.active });
+    setForm({ name: item.name, method: item.method, rate: item.rate != null ? Number(item.rate) : "", regular: item.regular !== false, active: item.active });
   }
 
   async function save() {
@@ -47,6 +48,7 @@ export default function EarningSection({
       method: form.method,
       rate: form.rate === "" ? null : Number(form.rate),
       active: !!form.active,
+      ...(withRegularFlag ? { regular: !!form.regular } : {}),
     };
     try {
       if (editing) await api(`${apiBase}/${editing.id}`, { method: "PATCH", jsonBody: body });
@@ -115,6 +117,16 @@ export default function EarningSection({
               <input type="number" step="0.01" value={form.rate}
                 onChange={(e) => setForm({ ...form, rate: e.target.value })} />
             </div>
+            {withRegularFlag && (
+              <div>
+                <label>Occurrence</label>
+                <select value={form.regular ? "regular" : "irregular"}
+                  onChange={(e) => setForm({ ...form, regular: e.target.value === "regular" })}>
+                  <option value="regular">Regular — guaranteed every period</option>
+                  <option value="irregular">Fluctuating — not guaranteed (leave, overtime…)</option>
+                </select>
+              </div>
+            )}
             <div>
               <label>Active</label>
               <select value={form.active ? "yes" : "no"} onChange={(e) => setForm({ ...form, active: e.target.value === "yes" })}>
@@ -139,6 +151,9 @@ export default function EarningSection({
                 {item.method === "FIXED"
                   ? `KSh ${fmt(item.rate ?? 0)}`
                   : `${item.rate ?? 0}% of basic pay`}
+                {withRegularFlag && (item.regular !== false
+                  ? " · regular (in regular cash earnings)"
+                  : " · fluctuating (gross pay only)")}
                 {" "}· per-employee override allowed
               </p>
             </div>

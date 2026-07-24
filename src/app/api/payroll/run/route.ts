@@ -72,11 +72,14 @@ export const POST = handler(async (req) => {
         }));
 
       const basicPay = Number(emp.basicPay);
-      // Company-defined allowances/benefits assigned to this employee
+      // Company-defined allowances/benefits assigned to this employee.
+      // Regular allowances form part of the total regular cash earnings;
+      // irregular (fluctuating) ones only count toward total gross pay.
       const allowanceLines = emp.allowances
         .filter((r: any) => r.allowance.active)
         .map((r: any) => ({
           label: r.allowance.name,
+          regular: !!r.allowance.regular,
           amount: computeEarning(
             { id: r.allowance.id, name: r.allowance.name, method: r.allowance.method,
               rate: toNum(r.allowance.rate), ownRate: toNum(r.ownRate) },
@@ -96,14 +99,21 @@ export const POST = handler(async (req) => {
         }))
         .filter((l: any) => l.amount > 0);
 
-      const otherAllowances = inputs[emp.id]?.allowances ?? 0; // period CSV input
-      const allowancesTotal = allowanceLines.reduce((s: number, l: any) => s + l.amount, 0) + otherAllowances;
+      // Period CSV "other allowances" are one-off, so they are irregular by nature
+      const otherAllowances = inputs[emp.id]?.allowances ?? 0;
+      const regularAllowances = allowanceLines
+        .filter((l: any) => l.regular)
+        .reduce((s: number, l: any) => s + l.amount, 0);
+      const irregularAllowances = allowanceLines
+        .filter((l: any) => !l.regular)
+        .reduce((s: number, l: any) => s + l.amount, 0) + otherAllowances;
       const benefitsTotal = benefitLines.reduce((s: number, l: any) => s + l.amount, 0);
       const bonus = inputs[emp.id]?.bonus ?? 0; // one-off for this period (CSV input)
 
       const result = calculatePayslip({
         basicPay,
-        allowances: allowancesTotal,
+        regularAllowances,
+        irregularAllowances,
         benefits: benefitsTotal,
         bonus,
         deductions: engineDeductions,
@@ -114,6 +124,7 @@ export const POST = handler(async (req) => {
         data: {
           runId: run.id,
           employeeId: emp.id,
+          regularEarnings: result.regularEarnings,
           grossPay: result.grossPay,
           taxablePay: result.taxablePay,
           netPay: result.netPay,

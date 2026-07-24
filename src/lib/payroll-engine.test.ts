@@ -127,16 +127,65 @@ describe("bonus and benefits", () => {
     expect(r.netPay).toBe(46_029.15); // 39,029.15 + 10,000 - 3,000 extra PAYE
   });
 
-  it("includes non-cash benefits in gross but not in taxable or net pay", () => {
+  it("includes non-cash benefits in gross but not in the statutory base, taxable or net pay", () => {
     const r = slip(50_000, { benefits: 10_000 });
     expect(r.grossPay).toBe(60_000);
-    // Gross-point deductions DO see the benefit (base 60,000)
+    expect(r.regularEarnings).toBe(50_000); // benefits are not cash earnings
+    // Statutory regular-earnings-point deductions do NOT see the benefit
+    expect(line(r, "NSSF").amount).toBe(3_000);
+    expect(line(r, "SHIF").amount).toBe(1_375);
+    expect(line(r, "Housing Levy").amount).toBe(750);
+    expect(r.taxablePay).toBe(44_875); // 60,000 - 10,000 benefit - 5,125 pre-tax
+    expect(line(r, "PAYE").amount).toBe(5_845.85);
+    expect(r.netPay).toBe(39_029.15); // benefit never paid out in cash
+  });
+});
+
+describe("regular vs irregular (fluctuating) allowances", () => {
+  it("counts regular allowances in the statutory base and in gross/taxable", () => {
+    const r = slip(50_000, { regularAllowances: 10_000 });
+    expect(r.regularEarnings).toBe(60_000);
+    expect(r.grossPay).toBe(60_000);
     expect(line(r, "NSSF").amount).toBe(3_600);
     expect(line(r, "SHIF").amount).toBe(1_650);
     expect(line(r, "Housing Levy").amount).toBe(900);
-    expect(r.taxablePay).toBe(43_850); // 60,000 - 10,000 benefit - 6,150 pre-tax
-    expect(line(r, "PAYE").amount).toBe(5_538.35);
-    expect(r.netPay).toBe(38_311.65); // benefit never paid out in cash
+    expect(r.taxablePay).toBe(53_850); // 60,000 - 6,150 pre-tax
+    expect(line(r, "PAYE").amount).toBe(8_538.35);
+    expect(r.netPay).toBe(45_311.65);
+  });
+
+  it("keeps irregular allowances (leave, overtime) out of the statutory base but PAYE still sees them", () => {
+    const r = slip(50_000, { irregularAllowances: 10_000 });
+    expect(r.regularEarnings).toBe(50_000);
+    expect(r.grossPay).toBe(60_000); // total gross = regular + irregular
+    // Statutory items still computed on the 50,000 regular cash earnings
+    expect(line(r, "NSSF").amount).toBe(3_000);
+    expect(line(r, "SHIF").amount).toBe(1_375);
+    expect(line(r, "Housing Levy").amount).toBe(750);
+    expect(r.taxablePay).toBe(54_875); // 60,000 - 5,125 pre-tax
+    expect(line(r, "PAYE").amount).toBe(8_845.85); // overtime taxed at 30% marginal
+    expect(r.netPay).toBe(46_029.15);
+  });
+
+  it("deducts a REGULAR_EARNINGS-point scheme on basic + regular allowances only", () => {
+    const pension: EngineDeduction = {
+      id: "pen",
+      name: "Pension",
+      method: "PERCENTAGE",
+      point: "REGULAR_EARNINGS",
+      rate: 10,
+      preTax: true,
+    };
+    const r = calculatePayslip({
+      basicPay: 50_000,
+      regularAllowances: 10_000,
+      irregularAllowances: 5_000,
+      deductions: [],
+      schemes: [pension],
+    });
+    expect(line(r, "Pension").amount).toBe(6_000); // 10% of 60,000, ignores the 5,000
+    expect(line(r, "Pension").kind).toBe("SCHEME");
+    expect(r.taxablePay).toBe(59_000); // 65,000 - 6,000
   });
 });
 
@@ -238,7 +287,12 @@ describe("money and rounding policy", () => {
   });
 
   it("keeps totals exact in cents: net = gross - benefits - sum of lines", () => {
-    const r = slip(123_456.78, { allowances: 7_891.23, benefits: 1_234.56, bonus: 987.65 });
+    const r = slip(123_456.78, {
+      regularAllowances: 7_891.23,
+      irregularAllowances: 456.78,
+      benefits: 1_234.56,
+      bonus: 987.65,
+    });
     const cents = (n: number) => Math.round(n * 100);
     const lineTotal = r.lines.reduce((sum, l) => sum + cents(l.amount), 0);
     expect(cents(r.netPay)).toBe(cents(r.grossPay) - cents(1_234.56) - lineTotal);
