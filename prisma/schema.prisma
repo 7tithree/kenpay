@@ -166,11 +166,14 @@ model Deduction {
   method        CalcMethod
   point         DeductionPoint
   rate          Decimal?       @db.Decimal(8, 4)  // % for PERCENTAGE, amount for FIXED
-  capAmount     Decimal?       @db.Decimal(14, 2) // e.g. SHIF cap 5,000
+  capAmount     Decimal?       @db.Decimal(14, 2) // caps the amount deducted from pay
   minAmount     Decimal?       @db.Decimal(14, 2)
   relief        Decimal?       @db.Decimal(14, 2) // e.g. PAYE personal relief 2,400
   employerRate  Decimal?       @db.Decimal(8, 4)  // employer match % (NSSF, Housing Levy)
   preTax        Boolean        @default(true)     // reduces taxable pay?
+  // Registered pension contribution (NSSF): tax-deductible only up to the
+  // statutory cap COMBINED with pension-kind schemes (KES 30,000/month).
+  pension       Boolean        @default(false)
   tiers         Json?          // [{upTo: 24000, rate: 10}, ...] upTo=null => open band
   active        Boolean        @default(true)
   exemptions    DeductionExemption[]
@@ -228,8 +231,9 @@ model AllowanceRecipient {
   @@unique([allowanceId, employeeId])
 }
 
-// Non-cash (in-kind) benefits — counted in gross pay but exempt from taxable
-// pay, and never paid out in net pay.
+// Non-cash (in-kind) benefits — counted in gross pay, never paid out in net
+// pay. Taxable benefits count fully toward taxable pay; non-taxable ones are
+// exempt up to `capAmount` (if set), with any surplus added to taxable pay.
 model Benefit {
   id         String             @id @default(cuid())
   companyId  String
@@ -237,6 +241,8 @@ model Benefit {
   name       String             // Company car, Housing, Meals...
   method     CalcMethod         @default(FIXED)
   rate       Decimal?           @db.Decimal(14, 4)
+  taxable    Boolean            @default(true)
+  capAmount  Decimal?           @db.Decimal(14, 2) // non-taxable: exemption cap; surplus is taxed
   active     Boolean            @default(true)
   recipients BenefitRecipient[]
   createdAt  DateTime           @default(now())
@@ -274,7 +280,9 @@ model Scheme {
   method       CalcMethod
   point        DeductionPoint @default(REGULAR_EARNINGS)
   rate         Decimal?       @db.Decimal(8, 4)
-  capAmount    Decimal?       @db.Decimal(14, 2) // allowable-deduction cap e.g. 30,000
+  // Caps the amount deducted from pay. Tax deductibility of PENSION-kind
+  // schemes is capped separately (30,000/month combined with NSSF) at run time.
+  capAmount    Decimal?       @db.Decimal(14, 2)
   employerRate Decimal?       @db.Decimal(8, 4)
   preTax       Boolean        @default(true)
   active       Boolean        @default(true)

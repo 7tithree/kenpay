@@ -38,6 +38,14 @@ export default function SchemesPage() {
     } catch (e: any) { setError(e.message); }
   }
 
+  async function removeMember(scheme: any, employeeId: string) {
+    setError("");
+    try {
+      await api(`/api/schemes/${scheme.id}/members`, { method: "DELETE", jsonBody: { employeeId } });
+      await load();
+    } catch (e: any) { setError(e.message); }
+  }
+
   async function enrolAll(scheme: any) {
     if (!confirm(`Enrol all employees into "${scheme.name}"? Terminated employees are skipped.`)) return;
     try {
@@ -100,7 +108,8 @@ export default function SchemesPage() {
             <strong>Members ({s.members.length}):</strong>{" "}
             {s.members.map((m: any) => (
               <span key={m.id} className="pill ACTIVE" style={{ marginRight: 6 }}>
-                {m.employee.firstName} {m.employee.lastName}
+                {m.employee.firstName} {m.employee.lastName}{" "}
+                <a href="#" onClick={(ev) => { ev.preventDefault(); removeMember(s, m.employeeId); }}>×</a>
               </span>
             ))}
             {enrol && enrol.schemeId === s.id ? (

@@ -36,6 +36,7 @@ export const POST = handler(async () => {
         relief: (d as any).relief ?? null,
         employerRate: (d as any).employerRate ?? null,
         preTax: d.preTax,
+        pension: (d as any).pension ?? false,
         tiers: (d as any).tiers ?? undefined,
         active: true,
       };

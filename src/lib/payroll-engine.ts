@@ -14,8 +14,14 @@
  * 1. Total gross pay = regular cash earnings + irregular allowances
  *    + non-cash benefits + bonus
  * 2. Less pre-tax deductions/schemes (NSSF, SHIF, Housing Levy, pension...) -> Taxable pay
- *    Benefits are non-cash (in-kind): they count toward gross pay but are
- *    exempt from taxable pay and are never paid out in net pay.
+ *    Registered pension contributions (NSSF + pension schemes, flagged
+ *    `pension`) are tax-deductible only up to a COMBINED monthly cap
+ *    (`pensionDeductibleCap`, KES 30,000 in Kenya); the surplus stays in
+ *    taxable pay even though the full contribution still leaves net pay.
+ *    Benefits are non-cash (in-kind): they count toward gross pay and are
+ *    never paid out in net pay. Taxable benefits count fully toward taxable
+ *    pay; the tax-exempt portion of non-taxable benefits (their value up to
+ *    the exemption cap) is subtracted, so a value above the cap is taxed.
  *    Bonus is cash added DIRECTLY at the taxable-pay step: it is fully taxable
  *    but does not inflate the base that gross/regular-point deductions use.
  * 3. Apply PAYE bands (TIERED, point=TAXABLE_PAY) -> tax due, less personal relief
@@ -50,6 +56,9 @@ export type EngineDeduction = {
   preTax: boolean;
   tiers?: Tier[] | null;
   ownRate?: number | null;      // per-employee override (schemes)
+  // Registered pension contribution (NSSF, occupational pension schemes):
+  // counts toward the combined `pensionDeductibleCap` on tax deductibility.
+  pension?: boolean;
 };
 
 export type LineResult = {
@@ -149,15 +158,22 @@ export function calculatePayslip(opts: {
   basicPay: number;
   regularAllowances?: number;   // regular cash allowances total (guaranteed each period, taxable)
   irregularAllowances?: number; // fluctuating cash allowances total (leave, overtime..., taxable)
-  benefits?: number;   // non-cash benefits total (in gross, exempt from taxable, not paid out)
+  benefits?: number;          // non-cash benefits total (in gross, not paid out)
+  taxExemptBenefits?: number; // portion of `benefits` exempt from taxable pay (default 0: fully taxable)
   bonus?: number;      // cash bonus, added directly at the taxable-pay step
   deductions: EngineDeduction[]; // statutory + custom, exemptions already filtered out
   schemes: EngineDeduction[];    // employee's schemes
+  // Combined monthly cap on the TAX-DEDUCTIBLE portion of pension-flagged
+  // items (registered pension: NSSF + pension schemes). The full amounts are
+  // still deducted from pay; only taxable pay ignores the surplus.
+  // null/undefined = no cap.
+  pensionDeductibleCap?: number | null;
 }): PayslipResult {
   const basicCents = toCents(opts.basicPay);
   const regularAllowanceCents = toCents(opts.regularAllowances ?? 0);
   const irregularAllowanceCents = toCents(opts.irregularAllowances ?? 0);
   const benefitCents = toCents(opts.benefits ?? 0);
+  const exemptBenefitCents = Math.min(benefitCents, toCents(opts.taxExemptBenefits ?? 0));
   const bonusCents = toCents(opts.bonus ?? 0);
 
   // Base for REGULAR_EARNINGS-point deductions (statutory + schemes): only
@@ -176,7 +192,8 @@ export function calculatePayslip(opts: {
   ];
 
   // Pass 1: pre-tax items computed on BASIC, REGULAR EARNINGS or GROSS
-  let preTaxCents = 0;
+  let preTaxCents = 0;        // full amounts deducted from pay
+  let pensionPreTaxCents = 0; // subset subject to the pension deductibility cap
   for (const d of all.filter((x) => x.preTax && x.point !== "TAXABLE_PAY" && x.point !== "NET_PAY")) {
     const base =
       d.point === "BASIC_PAY" ? basicCents
@@ -192,10 +209,21 @@ export function calculatePayslip(opts: {
       kind: d.kind,
     });
     preTaxCents += amount;
+    if (d.pension) pensionPreTaxCents += amount;
   }
 
-  // Benefits are exempt from taxable pay; bonus is added directly here.
-  const taxableCents = Math.max(0, grossBaseCents - benefitCents - preTaxCents) + bonusCents;
+  // Pension-flagged items (NSSF + registered pension schemes) reduce taxable
+  // pay only up to the combined cap; net pay still loses the full amounts.
+  const pensionCapCents =
+    opts.pensionDeductibleCap != null ? toCents(opts.pensionDeductibleCap) : null;
+  const deductibleCents =
+    preTaxCents - pensionPreTaxCents +
+    (pensionCapCents === null ? pensionPreTaxCents : Math.min(pensionPreTaxCents, pensionCapCents));
+
+  // Only the tax-exempt portion of benefits leaves taxable pay — a taxable
+  // benefit (or the surplus above a non-taxable benefit's cap) stays in.
+  // Bonus is added directly here.
+  const taxableCents = Math.max(0, grossBaseCents - exemptBenefitCents - deductibleCents) + bonusCents;
 
   // Pass 2: items computed on TAXABLE_PAY (PAYE)
   let taxCents = 0;
@@ -257,6 +285,7 @@ export const KENYA_DEFAULT_DEDUCTIONS = [
     point: "REGULAR_EARNINGS",
     preTax: true,
     employerRate: 6,
+    pension: true, // registered pension: shares the 30,000 deductibility cap
     tiers: [
       { upTo: 9000, rate: 6 },   // Tier I (max 540)
       { upTo: 108000, rate: 6 }, // Tier II (max 5,940)
@@ -268,8 +297,7 @@ export const KENYA_DEFAULT_DEDUCTIONS = [
     statutory: true,
     method: "PERCENTAGE",
     point: "REGULAR_EARNINGS",
-    rate: 2.75,
-    capAmount: 5000,
+    rate: 2.75, // no upper cap; 2.75% of regular earnings however high
     preTax: true,
   },
   {
@@ -282,6 +310,12 @@ export const KENYA_DEFAULT_DEDUCTIONS = [
     preTax: true,
   },
 ] as const;
+
+// Combined monthly cap on tax-deductible registered pension contributions
+// (NSSF + occupational pension schemes) — Income Tax Act limit of KES
+// 30,000/month (360,000/year). Contributions above it still leave net pay
+// but no longer reduce taxable pay.
+export const KENYA_PENSION_DEDUCTIBLE_CAP = 30000;
 
 export const KENYA_DEFAULT_WHT = [
   { category: "Professional fees", resident: true, rate: 5 },

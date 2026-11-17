@@ -20,6 +20,7 @@ function statutory(): EngineDeduction[] {
     relief: d.relief ?? null,
     employerRate: d.employerRate ?? null,
     preTax: d.preTax,
+    pension: d.pension ?? false,
     tiers: d.tiers ? d.tiers.map((t: any) => ({ ...t })) : null,
   }));
 }
@@ -94,7 +95,7 @@ describe("PAYE bands and relief", () => {
   });
 });
 
-describe("NSSF tiers and SHIF cap", () => {
+describe("NSSF tiers and SHIF", () => {
   it("hits the NSSF tier boundaries exactly", () => {
     expect(line(slip(9_000), "NSSF").amount).toBe(540); // Tier I ceiling
     expect(line(slip(108_000), "NSSF").amount).toBe(6_480); // Tier II ceiling
@@ -110,8 +111,78 @@ describe("NSSF tiers and SHIF cap", () => {
     expect(line(slip(50_000), "NSSF").employerAmount).toBe(3_000); // below ceiling: unchanged
   });
 
-  it("caps SHIF at 5,000", () => {
-    expect(line(slip(200_000), "SHIF").amount).toBe(5_000); // 2.75% would be 5,500
+  it("does not cap SHIF — flat 2.75% however high the earnings", () => {
+    expect(line(slip(200_000), "SHIF").amount).toBe(5_500);
+    expect(line(slip(1_000_000), "SHIF").amount).toBe(27_500);
+  });
+});
+
+describe("pension tax-deductibility cap", () => {
+  const pensionScheme = (): EngineDeduction => ({
+    id: "pen",
+    name: "Pension",
+    method: "PERCENTAGE",
+    point: "REGULAR_EARNINGS",
+    rate: 10,
+    preTax: true,
+    pension: true,
+  });
+
+  it("caps the taxable-pay reduction of NSSF + pension combined, but still deducts the full contribution", () => {
+    const r = calculatePayslip({
+      basicPay: 400_000,
+      deductions: statutory(),
+      schemes: [pensionScheme()],
+      pensionDeductibleCap: 30_000,
+    });
+    expect(line(r, "NSSF").amount).toBe(6_480);
+    expect(line(r, "Pension").amount).toBe(40_000); // full 10% leaves net pay
+    // Deductible pension limited to 30,000 - 6,480 NSSF = 23,520
+    expect(r.taxablePay).toBe(353_000); // 400,000 - 30,000 - 11,000 SHIF - 6,000 levy
+    expect(line(r, "PAYE").amount).toBe(98_283.35);
+    expect(r.netPay).toBe(238_236.65); // 400,000 - 6,480 - 11,000 - 6,000 - 40,000 - 98,283.35
+  });
+
+  it("has no effect while combined contributions stay below the cap", () => {
+    const capped = calculatePayslip({
+      basicPay: 150_000,
+      deductions: statutory(),
+      schemes: [pensionScheme()],
+      pensionDeductibleCap: 30_000,
+    });
+    // NSSF 6,480 + pension 15,000 = 21,480 < 30,000: fully deductible
+    expect(capped.taxablePay).toBe(122_145); // 150,000 - 6,480 - 4,125 - 2,250 - 15,000
+    const uncapped = calculatePayslip({
+      basicPay: 150_000,
+      deductions: statutory(),
+      schemes: [pensionScheme()],
+    });
+    expect(capped).toEqual(uncapped);
+  });
+
+  it("applies no cap when pensionDeductibleCap is not given", () => {
+    const r = calculatePayslip({
+      basicPay: 400_000,
+      deductions: statutory(),
+      schemes: [pensionScheme()],
+    });
+    expect(r.taxablePay).toBe(336_520); // full 40,000 pension deducted
+  });
+
+  it("reproduces a hand-verified payroll-register row (345,601.87 + 1,200 benefit)", () => {
+    const r = calculatePayslip({
+      basicPay: 345_601.87,
+      benefits: 1_200, // taxable telephone benefit
+      deductions: statutory(),
+      schemes: [pensionScheme()],
+      pensionDeductibleCap: 30_000,
+    });
+    expect(line(r, "NSSF").amount).toBe(6_480);
+    expect(line(r, "SHIF").amount).toBe(9_504.05);
+    expect(line(r, "Housing Levy").amount).toBe(5_184.03);
+    expect(line(r, "Pension").amount).toBe(34_560.19);
+    expect(r.taxablePay).toBe(302_113.79);
+    expect(line(r, "PAYE").amount).toBe(83_017.49);
   });
 });
 
@@ -127,7 +198,7 @@ describe("bonus and benefits", () => {
     expect(r.netPay).toBe(46_029.15); // 39,029.15 + 10,000 - 3,000 extra PAYE
   });
 
-  it("includes non-cash benefits in gross but not in the statutory base, taxable or net pay", () => {
+  it("taxes benefits fully by default while keeping them out of the statutory base and net pay", () => {
     const r = slip(50_000, { benefits: 10_000 });
     expect(r.grossPay).toBe(60_000);
     expect(r.regularEarnings).toBe(50_000); // benefits are not cash earnings
@@ -135,9 +206,26 @@ describe("bonus and benefits", () => {
     expect(line(r, "NSSF").amount).toBe(3_000);
     expect(line(r, "SHIF").amount).toBe(1_375);
     expect(line(r, "Housing Levy").amount).toBe(750);
-    expect(r.taxablePay).toBe(44_875); // 60,000 - 10,000 benefit - 5,125 pre-tax
+    expect(r.taxablePay).toBe(54_875); // 60,000 - 5,125 pre-tax; benefit stays taxable
+    expect(line(r, "PAYE").amount).toBe(8_845.85);
+    expect(r.netPay).toBe(36_029.15); // benefit never paid out, but its PAYE is
+  });
+
+  it("keeps tax-exempt (non-taxable) benefits out of taxable pay", () => {
+    const r = slip(50_000, { benefits: 10_000, taxExemptBenefits: 10_000 });
+    expect(r.grossPay).toBe(60_000);
+    expect(r.taxablePay).toBe(44_875); // 60,000 - 10,000 exempt benefit - 5,125 pre-tax
     expect(line(r, "PAYE").amount).toBe(5_845.85);
-    expect(r.netPay).toBe(39_029.15); // benefit never paid out in cash
+    expect(r.netPay).toBe(39_029.15);
+  });
+
+  it("taxes the surplus of a non-taxable benefit above its exemption cap", () => {
+    // 10,000 benefit, exempt up to a 6,000 cap -> 4,000 surplus is taxed
+    const r = slip(50_000, { benefits: 10_000, taxExemptBenefits: 6_000 });
+    expect(r.grossPay).toBe(60_000);
+    expect(r.taxablePay).toBe(48_875); // 60,000 - 6,000 exempt - 5,125 pre-tax
+    expect(line(r, "PAYE").amount).toBe(7_045.85); // 5,845.85 + 4,000 @ 30%
+    expect(r.netPay).toBe(37_829.15);
   });
 });
 

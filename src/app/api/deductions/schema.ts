@@ -11,6 +11,7 @@ export const deductionSchema = z.object({
   relief: z.number().nonnegative().nullable().optional(),
   employerRate: z.number().nonnegative().nullable().optional(),
   preTax: z.boolean().optional(),
+  pension: z.boolean().optional(),
   tiers: z.array(z.object({ upTo: z.number().nullable(), rate: z.number() })).nullable().optional(),
   active: z.boolean().optional(),
 });

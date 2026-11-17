@@ -3,7 +3,12 @@ import { prisma } from "@/lib/db";
 import { requireCompany, ApiError } from "@/lib/auth";
 import { handler, json } from "@/lib/api";
 import { PERMISSIONS } from "@/lib/permissions";
-import { calculatePayslip, computeEarning, type EngineDeduction } from "@/lib/payroll-engine";
+import {
+  calculatePayslip,
+  computeEarning,
+  KENYA_PENSION_DEDUCTIBLE_CAP,
+  type EngineDeduction,
+} from "@/lib/payroll-engine";
 import { logAudit } from "@/lib/audit";
 
 // Auth routes read cookies, so they can never be statically rendered.
@@ -60,7 +65,7 @@ export const POST = handler(async (req) => {
           id: d.id, name: d.name, method: d.method, point: d.point,
           rate: toNum(d.rate), capAmount: toNum(d.capAmount), minAmount: toNum(d.minAmount),
           relief: toNum(d.relief), employerRate: toNum(d.employerRate),
-          preTax: d.preTax, tiers: (d.tiers as any) ?? null,
+          preTax: d.preTax, tiers: (d.tiers as any) ?? null, pension: !!d.pension,
         }));
       const engineSchemes: EngineDeduction[] = emp.schemeMembers
         .filter((m: any) => m.scheme.active)
@@ -68,7 +73,7 @@ export const POST = handler(async (req) => {
           id: m.scheme.id, name: m.scheme.name, method: m.scheme.method, point: m.scheme.point,
           rate: toNum(m.scheme.rate), capAmount: toNum(m.scheme.capAmount),
           employerRate: toNum(m.scheme.employerRate), preTax: m.scheme.preTax,
-          ownRate: toNum(m.ownRate),
+          ownRate: toNum(m.ownRate), pension: m.scheme.kind === "PENSION",
         }));
 
       const basicPay = Number(emp.basicPay);
@@ -87,16 +92,20 @@ export const POST = handler(async (req) => {
           ),
         }))
         .filter((l: any) => l.amount > 0);
+      // Taxable benefits count fully toward taxable pay; non-taxable ones are
+      // exempt up to their cap, with any surplus above the cap taxed.
       const benefitLines = emp.benefits
         .filter((r: any) => r.benefit.active)
-        .map((r: any) => ({
-          label: r.benefit.name,
-          amount: computeEarning(
+        .map((r: any) => {
+          const amount = computeEarning(
             { id: r.benefit.id, name: r.benefit.name, method: r.benefit.method,
               rate: toNum(r.benefit.rate), ownRate: toNum(r.ownRate) },
             basicPay
-          ),
-        }))
+          );
+          const cap = toNum(r.benefit.capAmount);
+          const exempt = r.benefit.taxable ? 0 : cap != null ? Math.min(amount, cap) : amount;
+          return { label: r.benefit.name, amount, exempt };
+        })
         .filter((l: any) => l.amount > 0);
 
       // Period CSV "other allowances" are one-off, so they are irregular by nature
@@ -108,6 +117,7 @@ export const POST = handler(async (req) => {
         .filter((l: any) => !l.regular)
         .reduce((s: number, l: any) => s + l.amount, 0) + otherAllowances;
       const benefitsTotal = benefitLines.reduce((s: number, l: any) => s + l.amount, 0);
+      const exemptBenefits = benefitLines.reduce((s: number, l: any) => s + l.exempt, 0);
       const bonus = inputs[emp.id]?.bonus ?? 0; // one-off for this period (CSV input)
 
       const result = calculatePayslip({
@@ -115,9 +125,11 @@ export const POST = handler(async (req) => {
         regularAllowances,
         irregularAllowances,
         benefits: benefitsTotal,
+        taxExemptBenefits: exemptBenefits,
         bonus,
         deductions: engineDeductions,
         schemes: engineSchemes,
+        pensionDeductibleCap: KENYA_PENSION_DEDUCTIBLE_CAP,
       });
 
       await tx.payslip.create({

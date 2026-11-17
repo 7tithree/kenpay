@@ -137,7 +137,7 @@ export async function buildPayslipPdf(p: PayslipData): Promise<Uint8Array> {
 
   // Footer
   y = 40;
-  text(`Generated ${new Date().toISOString().slice(0, 10)} · KenPay`, M, 8, FONT, faint);
+  text(`Generated ${new Date().toISOString().slice(0, 10)} · Ken Pay`, M, 8, FONT, faint);
 
   doc.end();
   return done;

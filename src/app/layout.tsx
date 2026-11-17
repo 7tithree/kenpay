@@ -2,7 +2,7 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "KenPay — Payroll",
+  title: "Ken Pay — Payroll",
   description: "Multi-company payroll with configurable statutory deductions",
 };
 

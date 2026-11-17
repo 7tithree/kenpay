@@ -10,7 +10,7 @@ import { useMe } from "@/app/dashboard/me-context";
  * optional per-employee override.
  */
 export default function EarningSection({
-  title, singular, hint, apiBase, permPrefix, withRegularFlag,
+  title, singular, hint, apiBase, permPrefix, withRegularFlag, withTaxFlag,
 }: {
   title: string;
   singular: string;      // "allowance" | "benefit" (display)
@@ -18,6 +18,7 @@ export default function EarningSection({
   apiBase: string;       // "/api/allowances" | "/api/benefits"
   permPrefix: string;    // "allowance" | "benefit" (permission keys)
   withRegularFlag?: boolean; // allowances only: regular vs fluctuating earning
+  withTaxFlag?: boolean;     // benefits only: taxable vs non-taxable (with exemption cap)
 }) {
   const { me, can } = useMe();
   const [items, setItems] = useState<any[]>([]);
@@ -26,7 +27,7 @@ export default function EarningSection({
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
-  const emptyForm = { name: "", method: "FIXED", rate: "", regular: true, active: true };
+  const emptyForm = { name: "", method: "FIXED", rate: "", regular: true, taxable: true, capAmount: "", active: true };
   const [form, setForm] = useState<any>(emptyForm);
   const [assign, setAssign] = useState<{ itemId: string; employeeId: string; ownRate: string } | null>(null);
 
@@ -38,7 +39,7 @@ export default function EarningSection({
 
   function startEdit(item: any) {
     setEditing(item); setCreating(false);
-    setForm({ name: item.name, method: item.method, rate: item.rate != null ? Number(item.rate) : "", regular: item.regular !== false, active: item.active });
+    setForm({ name: item.name, method: item.method, rate: item.rate != null ? Number(item.rate) : "", regular: item.regular !== false, taxable: item.taxable !== false, capAmount: item.capAmount != null ? Number(item.capAmount) : "", active: item.active });
   }
 
   async function save() {
@@ -49,6 +50,10 @@ export default function EarningSection({
       rate: form.rate === "" ? null : Number(form.rate),
       active: !!form.active,
       ...(withRegularFlag ? { regular: !!form.regular } : {}),
+      ...(withTaxFlag ? {
+        taxable: !!form.taxable,
+        capAmount: form.taxable || form.capAmount === "" ? null : Number(form.capAmount),
+      } : {}),
     };
     try {
       if (editing) await api(`${apiBase}/${editing.id}`, { method: "PATCH", jsonBody: body });
@@ -117,6 +122,26 @@ export default function EarningSection({
               <input type="number" step="0.01" value={form.rate}
                 onChange={(e) => setForm({ ...form, rate: e.target.value })} />
             </div>
+            {withTaxFlag && (
+              <>
+                <div>
+                  <label>Tax treatment</label>
+                  <select value={form.taxable ? "taxable" : "nontaxable"}
+                    onChange={(e) => setForm({ ...form, taxable: e.target.value === "taxable" })}>
+                    <option value="taxable">Taxable — full value counts toward taxable pay</option>
+                    <option value="nontaxable">Non-taxable — exempt from taxable pay</option>
+                  </select>
+                </div>
+                {!form.taxable && (
+                  <div>
+                    <label>Exemption cap (KSh, optional)</label>
+                    <input type="number" step="0.01" placeholder="No cap — fully exempt"
+                      value={form.capAmount}
+                      onChange={(e) => setForm({ ...form, capAmount: e.target.value })} />
+                  </div>
+                )}
+              </>
+            )}
             {withRegularFlag && (
               <div>
                 <label>Occurrence</label>
@@ -154,6 +179,9 @@ export default function EarningSection({
                 {withRegularFlag && (item.regular !== false
                   ? " · regular (in regular cash earnings)"
                   : " · fluctuating (gross pay only)")}
+                {withTaxFlag && (item.taxable !== false
+                  ? " · taxable"
+                  : ` · non-taxable${item.capAmount != null ? ` (exempt up to KSh ${fmt(item.capAmount)}, surplus taxed)` : ""}`)}
                 {" "}· per-employee override allowed
               </p>
             </div>
