@@ -1,6 +1,6 @@
 # KenPay — Multi-company Kenyan payroll
 
-Next.js 14 (App Router) + PostgreSQL (Prisma). Phase 1 build.
+Next.js 14 (App Router) + PostgreSQL (Prisma)
 
 ## What's included
 
@@ -21,19 +21,7 @@ Next.js 14 (App Router) + PostgreSQL (Prisma). Phase 1 build.
 - **WHT rates**: definable per company (defaults seeded: professional fees 5%, residential rent 10%, dividends 5%, interest 15%) — reports are under the Reports tab.
 - **Error handling**: one `handler()` wrapper gives every API route consistent JSON errors (401/403/404/409/413/422/500), Zod validation with field-level messages, Prisma unique-constraint mapping; the UI surfaces all of it in banners.
 
-## Setup
-
-```bash
-npm install
-cp .env.example .env        # set DATABASE_URL + a strong AUTH_SECRET
-npm run db:deploy           # create tables (applies prisma/migrations)
-npm run db:seed             # optional demo user
-npm run dev
-```
-
 Register, then go to **Company settings → Create a new company**. It arrives pre-loaded with statutory deductions, roles, WHT rates, and employment types.
-
-## Phase 2 (included)
 
 - **Payslip PDF** — one-click download per payslip (`payslip.download` permission), rendered server-side with pdfkit: company header, employee identifiers, earnings/deductions, totals, and employer contributions shown separately.
 - **Payslip email** — sends the same PDF to the employee's address (`payslip.email`). Configure SMTP in `.env` (works with any provider; use AWS SES SMTP credentials when deploying to AWS). Unconfigured email returns a clear 501 with instructions instead of failing silently.
@@ -42,29 +30,10 @@ Register, then go to **Company settings → Create a new company**. It arrives p
 - **Reset payroll settings** (`general.reset_payroll`, in Settings → Danger zone) — restores statutory deductions and WHT rates to Kenyan defaults, deactivates custom deductions (never deletes, so historic payslips stay intact), and clears pending payroll inputs. Runs and payslips are untouched.
 - **Audit trail** — payroll runs and status changes, rate edits, resets, payslip emails, branch and WHT changes are logged with user, timestamp and detail; view under the Audit trail tab.
 - **Branches** — manage branches in Settings (inline rename, employee counts, safe delete that unassigns employees) and assign employees to a branch on creation.
-
-> Upgrading from the Phase 1 zip? Run `npm install` and `npm run db:deploy` again — Phase 2 adds a `WhtPayment` table.
-
-### Schema changes
-
-The schema is managed with Prisma migrations (`prisma/migrations`, baselined 2026-07-18). After editing `schema.prisma`, run `npm run db:migrate` to generate and apply a named migration locally; `npm run db:deploy` applies committed migrations without generating new ones (use this in production). Don't use `prisma db push` — it bypasses migration history.
-
-### Email configuration
-
-```
-SMTP_HOST=email-smtp.eu-west-1.amazonaws.com   # or any SMTP host
-SMTP_PORT=587
-SMTP_USER=...
-SMTP_PASS=...
-MAIL_FROM="Acme Payroll <payroll@acme.co.ke>"
-```
-
-## Phase 3 (included)
-
 - **Statutory returns** (Reports → Statutory returns): KRA P10 (PAYE), NSSF, SHIF and Housing Levy extracts per period, with employee identifiers (KRA PIN / NSSF No / SHIF No / national ID), per-employee amounts, employer contributions and totals. Generated **only from approved runs** so filings always match what was paid. CSV export gated by `reports.export`.
 - **Deployment**: production `Dockerfile` (multi-stage, non-root, Next.js standalone output), `docker-compose.yml` for a full local rehearsal (`docker compose up --build`), and `DEPLOYMENT.md` — a step-by-step AWS guide (RDS PostgreSQL, ECR, App Runner with VPC connector, SES SMTP for payslip email, secrets, hardening checklist, ECS alternative).
 
-## Requirements coverage (Permissions.txt)
+## Requirements coverage
 
 Every line has both API enforcement and a UI surface:
 1. Payroll/taxes/deductions — view, run, certify, approve, cancel, rate editing, per-employee exemptions (manage from the Deductions page)
@@ -76,7 +45,7 @@ Every line has both API enforcement and a UI surface:
 7. General — "access salary rates" hides pay amounts (list + export) without it; "access pension rates" gates Schemes; reset payroll settings in Danger zone
 8. Company settings — company details, branches, roles (full create/edit/delete with permission checkboxes + assignment by email), delete company
 
-## Phase 4 ideas
+## TBD ideas
 - Employee self-service portal (own payslips only)
 - Prisma migrations pipeline + CI (GitHub Actions → ECR → App Runner)
 - Multi-currency and mid-month proration
